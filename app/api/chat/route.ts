@@ -6,6 +6,7 @@ export const maxDuration = 30;
 // Создаём экземпляр OpenRouter с API ключом
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
+ // baseURL: "https://purple-wildflower-18a.namelomaxer.workers.dev/"
 });
 
 export async function POST(req: Request) {
