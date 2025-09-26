@@ -1,70 +1,63 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { generateText, ModelMessage } from "ai";
-import { Conversation } from "@/components/ai-elements/conversation";
-import { Message } from "@/components/ai-elements/message";
-import { PromptInput, PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import { useState } from 'react';
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 
-const openrouter = createOpenRouter({
-  apiKey: process.env.NEXT_PUBLIC_OPENROUTER_API_KEY!,
-});
+export default function ChatPage() {
+  const [input, setInput] = useState('');
 
-type ChatMessage = {
-  id: string;
-  from: "user" | "assistant" | "system";
-  content: string;
-};
-
-export default function Page() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: "1", from: "assistant", content: "🤖 Привет! Я твой AI-бот." },
-  ]);
-
-  const handleSend = async (message: PromptInputMessage, event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      from: "user",
-      content: message.text ?? "",
-    };
-
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-
-    try {
-      const aiMessages: ModelMessage[] = newMessages.map((m) => ({
-        role: m.from,
-        content: m.content,
-      }));
-
-      const result = await generateText({
-        model: openrouter("x-ai/grok-4-fast:free"),
-        messages: aiMessages,
-        maxOutputTokens: 500,
-      });
-
-      setMessages([
-        ...newMessages,
-        { id: crypto.randomUUID(), from: "assistant", content: result.text },
-      ]);
-    } catch (error: any) {
-      console.error("Ошибка генерации:", error.message);
-    }
-  };
+  // useChat с транспортом к нашему API
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/chat', // наш API route
+    }),
+  });
 
   return (
-    <div className="p-4 max-w-2xl mx-auto">
-      <Conversation>
-        {messages.map((m) => (
-          <Message key={m.id} from={m.from}>
-            {m.content}
-          </Message>
+    <div className="flex flex-col w-full max-w-md py-24 mx-auto">
+      <div className="flex-1 overflow-y-auto space-y-2">
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`whitespace-pre-wrap p-2 rounded ${
+              message.role === 'user' ? 'bg-blue-100 text-right ml-auto' : 'bg-gray-100 text-left mr-auto'
+            }`}
+          >
+            <strong>{message.role === 'user' ? 'Вы: ' : 'Бот: '}</strong>
+            {message.parts.map((part: any, i: number) => {
+              if (part.type === 'text') return <div key={i}>{part.text}</div>;
+              return null;
+            })}
+          </div>
         ))}
-      </Conversation>
-      <PromptInput onSubmit={handleSend} />
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!input.trim()) return;
+          sendMessage({ text: input });
+          setInput('');
+        }}
+        className="mt-4 flex gap-2"
+      >
+        <input
+          type="text"
+          className="flex-1 p-2 border rounded"
+          placeholder="Напишите сообщение..."
+          value={input}
+          onChange={(e) => setInput(e.currentTarget.value)}
+          disabled={status !== 'ready'}
+        />
+        <button
+          type="submit"
+          className="px-4 py-2 bg-blue-500 text-white rounded"
+          disabled={status !== 'ready' || !input.trim()}
+        >
+          Отправить
+        </button>
+      </form>
     </div>
   );
 }
