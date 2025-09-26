@@ -10,6 +10,7 @@ const openrouter = createOpenRouter({
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
+  console.log("Получены сообщения:", messages);
 
   // Преобразуем UIMessage в формат модели
   const modelMessages = convertToModelMessages(messages);
