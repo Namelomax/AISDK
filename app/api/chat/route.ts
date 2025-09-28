@@ -6,7 +6,6 @@ const projectDir = process.cwd()
 loadEnvConfig(projectDir)
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,  
-  
 });
 
 export async function POST(req: Request) {
