@@ -5,7 +5,7 @@ export const maxDuration = 30;
 
 // Создаём экземпляр OpenRouter с API ключом
 const openrouter = createOpenRouter({
-  apiKey: "Bearer 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",
+  apiKey: "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",
   //baseURL: "https://purple-wildflower-18a.namelomaxer.workers.dev/"
 });
 
