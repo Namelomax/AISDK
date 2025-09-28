@@ -1,9 +1,8 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, UIMessage, convertToModelMessages } from 'ai';
-import { loadEnvConfig } from '@next/env'
 export const maxDuration = 30;
-const projectDir = process.cwd()
-loadEnvConfig(projectDir)
+
+export const runtime = 'nodejs';
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,  
 });
