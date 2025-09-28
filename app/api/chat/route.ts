@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   const modelMessages = convertToModelMessages(messages);
 
   const result = streamText({
-    model: openrouter('x-ai/grok-4-fast:free'), // выбираем нужную модель
+    model: openrouter.chat('x-ai/grok-4-fast:free'), // выбираем нужную модель
     messages: modelMessages,
   });
 
