@@ -122,7 +122,10 @@ type UIMessagePart = SerpToolUIPart | WeatherToolUIPart | {
         <Conversation>
           <ConversationContent>
             {messages.map((message) => {
-              const textParts = message.parts.filter(p => p.type === 'text');
+              const textParts = message.parts.filter(
+  (p): p is { type: 'text'; text: string } => p.type === 'text'
+);
+
               const reasoningParts = message.parts.filter(p => p.type === 'reasoning');
               const toolParts = message.parts.filter(p => p.type.startsWith('tool-'));
               const messageText = textParts.map(p => p.text).join('\n');
@@ -132,8 +135,9 @@ type UIMessagePart = SerpToolUIPart | WeatherToolUIPart | {
                   <MessageContent>
                     {/* Text parts */}
                     {textParts.map((part, i) => (
-                      <Response key={i}>{part.text}</Response>
-                    ))}
+  <Response key={i}>{part.text}</Response>
+))}
+
 
                     {/* Reasoning parts */}
                     {reasoningParts.map((part, i) => (
@@ -203,7 +207,7 @@ type UIMessagePart = SerpToolUIPart | WeatherToolUIPart | {
 <div className="w-96 bg-muted/30 overflow-auto">
   <div className="p-6">
     <h2 className="text-lg font-semibold mb-4 sticky top-0 bg-muted/30 pb-2">
-      Инструменты и Reasoning
+      Инструменты
     </h2>
 
     {messages.length === 0 && (
