@@ -16,7 +16,7 @@ export const maxDuration = 30;
 export const runtime = 'nodejs';
 
 const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY!,
+  apiKey: process.env.OPENROUTER_API_KEY2!,
 });
 
 // Глобальный объект документа
@@ -172,7 +172,8 @@ export async function POST(req: Request) {
   const { messages } = await req.json();
 
   try {
-    const openrouterModel = openrouter('nvidia/nemotron-nano-9b-v2:free');
+    const openrouterModel = openrouter.chat('nvidia/nemotron-nano-9b-v2:free');
+
 
     const stream = createUIMessageStream({
       originalMessages: messages,

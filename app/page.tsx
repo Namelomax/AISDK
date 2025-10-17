@@ -20,6 +20,15 @@ import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-e
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { Loader } from '@/components/ai-elements/loader';
 import { RefreshCcw, Copy, Check, Wrench } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+// Типы для документа
+type DocumentState = {
+  title: string;
+  content: string;
+  isStreaming: boolean;
+};
 
 // Компонент для отображения инструментов
 const ToolsDisplay = ({ tools, isStreaming }: { tools: any[], isStreaming: boolean }) => {
@@ -134,50 +143,23 @@ const ToolsDisplay = ({ tools, isStreaming }: { tools: any[], isStreaming: boole
   );
 };
 
-// ✅ Обновлённый компонент DocumentPanel со стримингом через <Response>
-const DocumentPanel = ({ messages }: { messages: any[] }) => {
-  // Находим последнее сообщение, связанное с документом
-  const lastDocMessage = messages.findLast(
-    (msg) =>
-      msg.parts.some((p: any) =>
-        ['data-title', 'data-documentDelta', 'data-clear', 'data-finish'].includes(p.type)
-      )
-  );
-
-  if (!lastDocMessage) return null;
-
-  const titlePart = lastDocMessage.parts.find((p: any) => p.type === 'data-title');
-  const title = titlePart?.data || 'Новый документ';
-
-  const isFinished = lastDocMessage.parts.some((p: any) => p.type === 'data-finish');
-  const isStreaming = !isFinished;
-
-  const documentChunks = lastDocMessage.parts.filter(
-    (p: any) => p.type === 'data-documentDelta'
-  );
-
-  // Для очистки документа при новом создании
-  const clearCount = messages.filter((msg) =>
-    msg.parts.some((p: any) => p.type === 'data-clear')
-  ).length;
+const DocumentPanel = ({ document }: { document: DocumentState }) => {
+  if (!document.title) return null;
 
   return (
-    <div className="w-[600px] bg-background border-r overflow-auto">
+    <div className=" flex-1 w-[600px] bg-background border-r overflow-auto">
       <div className="p-6">
-        <div className="flex items-center justify-between mb-4 sticky top-0 bg-background pb-2 border-b">
-          <h2 className="text-xl font-semibold">{title}</h2>
-          {isStreaming && (
-            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700">
+        <div className="flex items-center justify-between mb-4 sticky top-0 bg-background pb-2 border-b z-10">
+          <h2 className="text-xl font-semibold">{document.title}</h2>
+          {document.isStreaming && (
+            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 animate-pulse">
               Генерация...
             </span>
           )}
         </div>
-
-        <div key={clearCount} className="prose prose-sm max-w-none">
-          {documentChunks.map((part: any, i: number) => (
-            <Response key={i}>{part.data}</Response>
-          ))}
-        </div>
+      <div className="prose prose-sm max-w-none dark:prose-invert flex 1">
+        <Response>{document.content}</Response>
+      </div>
       </div>
     </div>
   );
@@ -186,10 +168,51 @@ const DocumentPanel = ({ messages }: { messages: any[] }) => {
 export default function ChatPage() {
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [document, setDocument] = useState<DocumentState>({
+    title: '',
+    content: '',
+    isStreaming: false,
+  });
 
   const { messages, sendMessage, status, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     onError: (error) => console.error(error),
+    onData: (dataPart) => {
+      console.log('Received data:', dataPart);
+     if (dataPart.type === 'data-title') {
+  console.log('Document title:', dataPart.data);
+  setDocument((prev) => ({
+    ...prev,
+    title: String(dataPart.data),
+    isStreaming: true,
+  }));
+}
+      // Очистка документа
+      if (dataPart.type === 'data-clear') {
+        console.log('Clearing document');
+        setDocument((prev) => ({
+          ...prev,
+          content: '',
+          isStreaming: true,
+        }));
+      }
+      // Добавление частей документа
+      if (dataPart.type === 'data-documentDelta') {
+        setDocument((prev) => ({
+          ...prev,
+          content: prev.content + dataPart.data,
+        }));
+      }
+
+      // Завершение документа
+      if (dataPart.type === 'data-finish') {
+        console.log('✅ Document finished');
+        setDocument((prev) => ({
+          ...prev,
+          isStreaming: false,
+        }));
+      }
+    },
   });
 
   const handleSubmit = (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
@@ -295,7 +318,7 @@ export default function ChatPage() {
               />
               <PromptInputSubmit
                 status={status === 'streaming' ? 'streaming' : 'ready'}
-                disabled={!input.trim() || status === 'streaming'}
+                disabled={!input.trim()}
                 className="absolute bottom-3 right-3"
               />
             </PromptInput>
@@ -304,7 +327,7 @@ export default function ChatPage() {
       </div>
 
       {/* Правая часть — документ */}
-      <DocumentPanel messages={messages} />
+      <DocumentPanel document={document} />
     </div>
   );
 }
