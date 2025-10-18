@@ -22,6 +22,7 @@ import { Loader } from '@/components/ai-elements/loader';
 import { RefreshCcw, Copy, Check, Wrench } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { SlidingTabBar } from '@/components/SlidingTabBar';
 
 // Типы для документа
 type DocumentState = {
@@ -235,6 +236,10 @@ export default function ChatPage() {
 
   return (
     <div className="h-screen flex bg-background">
+      {/* Верхняя плашка с вкладками */}
+    <div className="border-b p-3">
+      <SlidingTabBar onSendPrompt={(promptText) => sendMessage({ text: promptText })} />
+    </div>
       {/* Левая часть — чат */}
       <div className="w-[700px] flex flex-col border-r shrink-0">
         <Conversation>

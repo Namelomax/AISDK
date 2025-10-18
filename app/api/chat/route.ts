@@ -14,6 +14,7 @@ import type { ChatUIMessage, Document } from '@/lib/types';
 
 export const maxDuration = 30;
 export const runtime = 'nodejs';
+let systemPrompt = 'Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.';
 
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY2!,
@@ -49,7 +50,7 @@ const createSerpTool = () => tool({
     return { query: q, results };
   },
 });
-
+  
 // ---- Create Document Tool ----
 const createDocumentTool = (
   dataStream: UIMessageStreamWriter<ChatUIMessage>,
@@ -62,20 +63,18 @@ const createDocumentTool = (
     description: z.string().describe('Краткое описание и требования к документу'),
   }),
   execute: async ({ title, description }) => {
-    // Устанавливаем заголовок
+
     document.title = title;
     dataStream.write({
       type: 'data-title',
       data: title,
     });
 
-    // Очищаем предыдущий контент
     dataStream.write({
       type: 'data-clear',
       data: null,
     });
 
-    // Генерируем содержимое документа
     let draftContent = '';
     const { fullStream } = streamText({
       model,
@@ -169,11 +168,15 @@ const createUpdateDocumentTool = (
 });
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
-
+  const { messages, newSystemPrompt } = await req.json();
+  if (newSystemPrompt) {
+  systemPrompt = newSystemPrompt;
+  return new Response(JSON.stringify({ success: true, message: 'Промт обновлён' }), {
+    status: 200,
+  });
+}
   try {
-    const openrouterModel = openrouter.chat('nvidia/nemotron-nano-9b-v2:free');
-
+    const openrouterModel = openrouter('nvidia/nemotron-nano-9b-v2:free');
 
     const stream = createUIMessageStream({
       originalMessages: messages,
@@ -181,7 +184,7 @@ export async function POST(req: Request) {
         const result = streamText({
           model: openrouterModel,
           temperature: 0,
-          system: 'Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.',
+          system: systemPrompt,
           messages: convertToModelMessages(messages),
           stopWhen: stepCountIs(5),
           experimental_transform: smoothStream({ chunking: 'word' }),

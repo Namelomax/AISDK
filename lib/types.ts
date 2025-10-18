@@ -6,12 +6,9 @@ export type Document = {
   content: string;
 };
 
-// Расширяем базовый UIMessage
 export type ChatUIMessage = UIMessage & {
-  // Дополнительные поля если нужны
 };
 
-// Типы для кастомных data events
 export type DocumentDataEvent = 
   | {
       type: 'data-title';
