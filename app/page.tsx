@@ -167,6 +167,9 @@ const DocumentPanel = ({ document }: { document: DocumentState }) => {
 };
 
 export default function ChatPage() {
+  const [systemPrompt, setSystemPrompt] = useState(
+  "Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя."
+);
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [document, setDocument] = useState<DocumentState>({
@@ -219,6 +222,7 @@ export default function ChatPage() {
   const handleSubmit = (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (message.text?.trim()) {
+      console.log(message)
       sendMessage({ text: message.text });
       setInput('');
     }

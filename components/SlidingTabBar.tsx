@@ -9,7 +9,7 @@ type Tab = {
 };
 
 type SlidingTabBarProps = {
-  onSendPrompt: (promptText: string) => void; // callback для отправки текста в ИИ
+  onSendPrompt: (promptText: string) => void;
 };
 
 const allTabs: Tab[] = [

@@ -11,7 +11,7 @@ import {
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { ChatUIMessage, Document } from '@/lib/types';
-
+import { getPrompt, updatePrompt } from "@/lib//getPromt";
 export const maxDuration = 30;
 export const runtime = 'nodejs';
 let systemPrompt = 'Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.';
@@ -169,50 +169,46 @@ const createUpdateDocumentTool = (
 
 export async function POST(req: Request) {
   const { messages, newSystemPrompt } = await req.json();
+  console.log(newSystemPrompt)
+  // Если прислали новый промт — сохраняем его
   if (newSystemPrompt) {
-  systemPrompt = newSystemPrompt;
-  return new Response(JSON.stringify({ success: true, message: 'Промт обновлён' }), {
-    status: 200,
-  });
-}
-  try {
-    const openrouterModel = openrouter('nvidia/nemotron-nano-9b-v2:free');
-
-    const stream = createUIMessageStream({
-      originalMessages: messages,
-      execute: ({ writer: dataStream }) => {
-        const result = streamText({
-          model: openrouterModel,
-          temperature: 0,
-          system: systemPrompt,
-          messages: convertToModelMessages(messages),
-          stopWhen: stepCountIs(5),
-          experimental_transform: smoothStream({ chunking: 'word' }),
-          tools: {
-            serp: createSerpTool(),
-            createDocument: createDocumentTool(dataStream, openrouterModel),
-            updateDocument: createUpdateDocumentTool(dataStream, openrouterModel),
-          },
-        });
-
-        result.consumeStream();
-        
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          })
-        );
-      },
-      onError: () => {
-        return 'Опа, ошибка!';
-      },
-    });
-
-    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
-  } catch (error) {
-    console.error('Ошибка:', error);
-    return new Response(JSON.stringify({ error: String(error) }), { 
-      status: 500 
-    });
+    await updatePrompt(newSystemPrompt);
+    return new Response(
+      JSON.stringify({ success: true, message: "Промт обновлён" }),
+      { status: 200 }
+    );
   }
+
+  // Берём текущий промт из базы или кеша
+  const systemPrompt = await getPrompt();
+  console.log(systemPrompt+"1")
+  const openrouterModel = openrouter("nvidia/nemotron-nano-9b-v2:free");
+
+  const stream = createUIMessageStream({
+    originalMessages: messages,
+    execute: ({ writer: dataStream }) => {
+      const result = streamText({
+        model: openrouterModel,
+        temperature: 0,
+        system: systemPrompt,
+        messages: convertToModelMessages(messages),
+        stopWhen: stepCountIs(5),
+        experimental_transform: smoothStream({ chunking: "word" }),
+        tools: {
+          serp: createSerpTool(),
+          createDocument: createDocumentTool(dataStream, openrouterModel),
+          updateDocument: createUpdateDocumentTool(dataStream, openrouterModel),
+        },
+      });
+
+      result.consumeStream();
+
+      dataStream.merge(
+        result.toUIMessageStream({ sendReasoning: true })
+      );
+    },
+    onError: () => "Опа, ошибка!",
+  });
+
+  return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
 }
