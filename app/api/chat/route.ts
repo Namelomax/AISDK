@@ -14,7 +14,6 @@ import type { ChatUIMessage, Document } from '@/lib/types';
 import { getPrompt, updatePrompt } from "@/lib//getPromt";
 export const maxDuration = 30;
 export const runtime = 'nodejs';
-let systemPrompt = 'Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.';
 
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY2!,
@@ -166,6 +165,14 @@ const createUpdateDocumentTool = (
     };
   },
 });
+let currentPrompt: string;
+
+async function ensurePromptLoaded() {
+  if (!currentPrompt) {
+    currentPrompt = await getPrompt();
+  }
+  return currentPrompt;
+}
 
 export async function POST(req: Request) {
   const { messages, newSystemPrompt } = await req.json();
@@ -179,8 +186,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // Берём текущий промт из базы или кеша
-  const systemPrompt = await getPrompt();
+  const systemPrompt = currentPrompt || await ensurePromptLoaded();
   console.log(systemPrompt+"1")
   const openrouterModel = openrouter("nvidia/nemotron-nano-9b-v2:free");
 

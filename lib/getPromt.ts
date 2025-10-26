@@ -4,6 +4,7 @@ const db = new Surreal();
 
 // Кеш дефолтного промта в памяти (для быстрого использования)
 let cachedPrompt: string;
+let isLoaded = false;
 
 async function connectDB() {
 
@@ -14,14 +15,12 @@ async function connectDB() {
       database: process.env.SURREAL_DATABASE,
       auth: {
         username: String(process.env.SURREAL_USER),
-        password: String(process.env.SURREAL_PASSWORD),
+        password: String(process.env.SURREAL_PASS),
       },
     }
   );
   
   try {
-    await db.query(`DELETE FROM prompts;`);
-    await db.query(`remove TABLE prompts;`);
 await db.query(`
   DEFINE TABLE prompts SCHEMAFULL;
   DEFINE FIELD content ON prompts TYPE string;
@@ -35,29 +34,49 @@ await db.query(`
     }
 }
 }
-// ---------------- GET ----------------
 
-// Получить текущий промт (дефолт или обновлённый)
+// Получить текущий промт
 export async function getPrompt(): Promise<string> {
-  if (cachedPrompt) return cachedPrompt;
-    console.log(cachedPrompt)
+  if (cachedPrompt && isLoaded) return cachedPrompt;
+  console.log("3")
   await connectDB();
+  console.log("result2")
   const result = (await db.query(
     `SELECT * FROM prompts ORDER BY updated DESC LIMIT 1;`
-  )) as any[];
-  console.log(result)
-  cachedPrompt = result?.[0]?.content ?? "Ты полезный AI-ассистент…";
+  )) as [any[]];
+  console.log(result, "result")
+  const record = result?.[0]?.[0];
+  cachedPrompt = record?.content ?? "Ты полезный AI-ассистент…";
+  isLoaded = true;
   return cachedPrompt;
 }
 
-// Обновить промт (редактирование через фронт)
+
+// Обновить промт
 export async function updatePrompt(newPrompt: string) {
   await connectDB();
-  const prompt = {
-    content: newPrompt,
+
+  // Проверяем, существует ли запись
+  const check = await db.select("prompts");
+  console.log(check)
+  if (!check || check.length === 0) {
+    console.log("⚙️ Создаю новую запись prompts");
+    await db.create("prompts", { content: newPrompt });
+  } else {
+    console.log("♻️ Обновляю существующую запись prompts");
+    await db.query(`
+  UPDATE prompts MERGE {
+    content: $content
   };
-  await db.create("prompts", prompt);
+`, { content: newPrompt });
+
+  }
 
   cachedPrompt = newPrompt;
-  return prompt;
+  isLoaded = true;
+
+  console.log("✅ Кэш обновлён:", cachedPrompt);
+  return newPrompt;
 }
+
+

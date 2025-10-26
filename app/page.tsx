@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import {
@@ -177,7 +177,7 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
-
+const [currentPrompt, setCurrentPrompt] = useState<string>('');
   const { messages, sendMessage, status, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     onError: (error) => console.error(error),
@@ -227,7 +227,13 @@ export default function ChatPage() {
       setInput('');
     }
   };
-
+useEffect(() => {
+    console.log("qwer")
+  fetch('/api/promts')
+    .then(res => res.json())
+    .then(data => setCurrentPrompt(data.prompt))
+    .catch(err => console.error(err+"ags"));
+}, [])
   const handleCopy = async (text: string, id: string) => {
     try {
       await navigator.clipboard.writeText(text);
