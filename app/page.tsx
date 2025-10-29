@@ -263,7 +263,108 @@ useEffect(() => {
       console.error(err);
     }
   };
+// Компонент для отображения использованных агентов
+const AgentInfo = ({ message, isStreaming }: { message: any; isStreaming: boolean }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  
+  // Проверяем, какой агент использовался
+  const textParts = message.parts.filter((p: any) => p.type === 'text');
+  const reasoningParts = message.parts.filter((p: any) => p.type === 'reasoning');
+  
+  let agentType = null;
+  let agentData = null;
+  
+  for (const part of textParts) {
+    try {
+      const parsed = JSON.parse(part.text);
+      if (parsed.results) {
+        agentType = 'search';
+        agentData = parsed;
+      } else if (parsed.document) {
+        agentType = 'document';
+        agentData = parsed;
+      }
+    } catch {}
+  }
+  
+  // ✅ Показываем если есть reasoning (агент начал работу) или уже есть результат
+  const shouldShow = (reasoningParts.length > 0 || agentType) && message.role === 'assistant';
+  
+  if (!shouldShow) return null;
+  
+  // ✅ Определяем статус
+  const isProcessing = isStreaming && !agentData;
+  const isCompleted = agentData !== null;
+  
+  return (
+    <div className="w-full my-2">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {agentType === 'search' ? '🔍' : agentType === 'document' ? '📝' : '🤖'}
+        <span>
+          {agentType === 'search' ? 'Поиск в интернете' : 
+           agentType === 'document' ? 'Создание документа' : 
+           'Обработка запроса'}
+        </span>
+        
+        {/* ✅ Динамический статус */}
+        {isProcessing && (
+          <span className="text-xs px-2 py-0.5 rounded bg-yellow-100 text-yellow-700 animate-pulse">
+            В процессе...
+          </span>
+        )}
+        {isCompleted && (
+          <span className="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">
+            Готово
+          </span>
+        )}
+        
+        <span className="text-xs">{isOpen ? '▼' : '▶'}</span>
+      </button>
 
+      {isOpen && agentData && (
+        <div className="mt-2 space-y-2 pl-6 border-l-2 border-border">
+          <div className="bg-muted/50 rounded-lg border p-3 space-y-2">
+            {agentType === 'search' && agentData?.results && (
+              <>
+                <div className="text-sm font-medium">Найденные результаты:</div>
+                <div className="space-y-2">
+                  {agentData.results.map((result: any, idx: number) => (
+                    <div key={idx} className="text-xs">
+                      <a 
+                        href={result.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-blue-600 hover:underline"
+                      >
+                        {result.title}
+                      </a>
+                      <p className="text-muted-foreground mt-1">{result.snippet}</p>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            
+            {agentType === 'document' && agentData?.document && (
+              <>
+                <div className="text-sm font-medium">Параметры документа:</div>
+                <pre className="text-xs p-2 bg-background rounded overflow-auto">
+                  {JSON.stringify({
+                    title: agentData.document.title,
+                    contentLength: agentData.document.content.length
+                  }, null, 2)}
+                </pre>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
   return (
     <div className="h-screen flex bg-background">
       {/* Верхняя плашка с вкладками */}
@@ -291,25 +392,26 @@ useEffect(() => {
               return (
                 <Message from={message.role} key={message.id}>
                   <MessageContent>
-                    {textParts.map((part, i) => {
+                   {textParts.map((part, i) => {
   try {
     const parsed = JSON.parse(part.text);
-    // Если есть поле text - выводим только его
+    
+    // ✅ Выводим только текст, без источников
     if (parsed.text) {
-      return <Response key={i}>{parsed.text}</Response>;
+      return <Response key={`${message.id}-text-${i}`}>{parsed.text}</Response>;
     }
+    
     // Если это документ - обрабатываем отдельно
     if (parsed.document) {
-      // Документ уже обрабатывается через onData
       return null;
     }
-    // Если не удалось распарсить - выводим как есть
-    return <Response key={i}>{part.text}</Response>;
+    
+    return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
   } catch {
-    // Если не JSON - выводим как есть
-    return <Response key={i}>{part.text}</Response>;
+    return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
   }
 })}
+
                     {reasoningParts.map((part, i) => (
                       <Reasoning
                         key={i}
@@ -324,11 +426,7 @@ useEffect(() => {
                         <ReasoningContent>{part.text}</ReasoningContent>
                       </Reasoning>
                     ))}
-
-                    {toolParts.length > 0 && (
-                      <ToolsDisplay tools={toolParts} isStreaming={isToolsStreaming} />
-                    )}
-
+<AgentInfo message={message} isStreaming={status === 'streaming' && isLastMessage} />
                     {textParts.length > 0 && status !== 'streaming' && (
                       <Actions>
                         <Action onClick={() => regenerate()} label="Retry">
