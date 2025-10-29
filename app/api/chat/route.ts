@@ -1,17 +1,8 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { 
-  streamText, 
-  convertToModelMessages, 
-  stepCountIs,
-  createUIMessageStream,
-  JsonToSseTransformStream,
-  smoothStream,
-  type UIMessageStreamWriter
-} from 'ai';
-import { tool } from 'ai';
+import { streamText, UIMessage, convertToModelMessages, Output, smoothStream } from 'ai';
 import { z } from 'zod';
-import type { ChatUIMessage, Document } from '@/lib/types';
-import { getPrompt, updatePrompt } from "@/lib//getPromt";
+import { getPrompt, updatePrompt } from '@/lib/getPromt';
+
 export const maxDuration = 30;
 export const runtime = 'nodejs';
 
@@ -19,202 +10,189 @@ const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY2!,
 });
 
-// Глобальный объект документа
-const document: Document = { title: '', content: '' };
+const model = openrouter.chat('nvidia/nemotron-nano-9b-v2:free');
 
-// ---- Serp Tool ----
-const createSerpTool = () => tool({
-  description: 'Поиск информации через SerpAPI (Google Search)',
-  inputSchema: z.object({
-    q: z.string().describe('Поисковый запрос'),
-  }),
-  execute: async ({ q }) => {
-    const resp = await fetch(
-      `https://serpapi.com/search.json?q=${encodeURIComponent(q)}&api_key=${process.env.SERP_API_KEY}`
-    );
+let cachedPrompt: string | null = null;
 
-    if (!resp.ok) {
-      throw new Error(`SerpAPI error: ${resp.status} ${await resp.text()}`);
-    }
-
-    const json = await resp.json();
-
-    const results =
-      json.organic_results?.slice(0, 3).map((r: any) => ({
-        title: r.title,
-        link: r.link,
-        snippet: r.snippet, 
-      })) ?? [];
-
-    return { query: q, results };
-  },
-});
-  
-// ---- Create Document Tool ----
-const createDocumentTool = (
-  dataStream: UIMessageStreamWriter<ChatUIMessage>,
-  model: any
-) => tool({
-  name: 'createDocument',
-  description: 'Создать документ. Этот инструмент генерирует содержимое документа на основе заголовка и описания.',
-  inputSchema: z.object({
-    title: z.string().describe('Заголовок документа'),
-    description: z.string().describe('Краткое описание и требования к документу'),
-  }),
-  execute: async ({ title, description }) => {
-
-    document.title = title;
-    dataStream.write({
-      type: 'data-title',
-      data: title,
-    });
-
-    dataStream.write({
-      type: 'data-clear',
-      data: null,
-    });
-
-    let draftContent = '';
-    const { fullStream } = streamText({
-      model,
-      temperature: 0,
-      system: 'Создайте документ на основе предоставленного заголовка и описания. Используйте Markdown для структурирования текста. Включайте заголовки, где это необходимо.',
-      experimental_transform: smoothStream({ chunking: 'word' }),
-      prompt: `${title}\n\n${description}`,
-    });
-
-    for await (const delta of fullStream) {
-      if (delta.type === 'text-delta') {
-        draftContent += delta.text;
-        dataStream.write({
-          type: 'data-documentDelta',
-          data: delta.text,
-        });
-      }
-    }
-
-    document.content = draftContent;
-
-    // Завершаем создание документа
-    dataStream.write({ 
-      type: 'data-finish', 
-      data: null,
-    });
-
-    return {
-      title,
-      content: 'Документ создан и теперь доступен пользователю',
-    };
-  },
-});
-
-// ---- Update Document Tool ----
-const createUpdateDocumentTool = (
-  dataStream: UIMessageStreamWriter<ChatUIMessage>,
-  model: any
-) => tool({
-  name: 'updateDocument',
-  description: 'Обновить существующий документ с заданным описанием изменений.',
-  inputSchema: z.object({
-    description: z.string().describe('Описание изменений для документа'),
-  }),
-  execute: async ({ description }) => {
-    if (!document.content) {
-      return {
-        error: 'Нет документа для обновления. Сначала создайте документ.',
-      };
-    }
-
-    // Очищаем для обновления
-    dataStream.write({
-      type: 'data-clear',
-      data: null,
-    });
-
-    // Обновляем содержимое
-    let draftContent = '';
-    const { fullStream } = streamText({
-      model,
-      temperature: 0,
-      system: `Ты — ассистент ИИ, который обновляет документ в формате Markdown. Твоя задача — применить изменения к существующему содержимому документа на основе запроса пользователя и вернуть **только** полный, обновленный документ в формате Markdown. Не добавляйте никаких комментариев, приветствий или объяснений.\n\nТекущее содержимое документа:\n${document.content}`,
-      experimental_transform: smoothStream({ chunking: 'word' }),
-      prompt: description,
-    });
-
-    for await (const delta of fullStream) {
-      if (delta.type === 'text-delta') {
-        draftContent += delta.text;
-        dataStream.write({
-          type: 'data-documentDelta',
-          data: delta.text,
-        });
-      }
-    }
-
-    document.content = draftContent;
-
-    // Завершаем обновление
-    dataStream.write({ 
-      type: 'data-finish', 
-      data: null,
-    });
-
-    return {
-      title: document.title,
-      content: 'Документ был успешно обновлен',
-    };
-  },
-});
-let currentPrompt: string;
-
-async function ensurePromptLoaded() {
-  if (!currentPrompt) {
-    currentPrompt = await getPrompt();
-  }
-  return currentPrompt;
+async function ensurePrompt() {
+  if (!cachedPrompt) cachedPrompt = await getPrompt();
+  return cachedPrompt;
 }
 
-export async function POST(req: Request) {
-  const { messages, newSystemPrompt } = await req.json();
-  console.log(newSystemPrompt)
-  // Если прислали новый промт — сохраняем его
-  if (newSystemPrompt) {
-    await updatePrompt(newSystemPrompt);
-    return new Response(
-      JSON.stringify({ success: true, message: "Промт обновлён" }),
-      { status: 200 }
-    );
-  }
+// Общая схема ответа
+const baseSchema = z.object({
+  text: z.string().describe('Текстовый ответ пользователю'),
+  action: z
+    .enum(['none', 'document', 'search'])
+    .default('none')
+    .describe('Тип действия, если нужно обработать запрос специальным агентом'),
+});
 
-  const systemPrompt = currentPrompt || await ensurePromptLoaded();
-  console.log(systemPrompt+"1")
-  const openrouterModel = openrouter("nvidia/nemotron-nano-9b-v2:free");
+// Document agent
+const documentSchema = z.object({
+  text: z.string(),
+  document: z.object({
+    title: z.string(),
+    content: z.string(),
+  }),
+});
 
-  const stream = createUIMessageStream({
-    originalMessages: messages,
-    execute: ({ writer: dataStream }) => {
-      const result = streamText({
-        model: openrouterModel,
-        temperature: 0,
-        system: systemPrompt,
-        messages: convertToModelMessages(messages),
-        stopWhen: stepCountIs(5),
-        experimental_transform: smoothStream({ chunking: "word" }),
-        tools: {
-          serp: createSerpTool(),
-          createDocument: createDocumentTool(dataStream, openrouterModel),
-          updateDocument: createUpdateDocumentTool(dataStream, openrouterModel),
-        },
-      });
+async function documentAgent(messages: any[], systemPrompt: string) {
+  return streamText({
+    model,
+    messages: convertToModelMessages(messages),
+    system: systemPrompt + '\nТы — помощник по созданию документов в Markdown.',
+    experimental_output: Output.object({ schema: documentSchema }),
+    experimental_transform: smoothStream(),
+  });
+}
 
-      result.consumeStream();
+// Serp агент
+const serpSchema = z.object({
+  text: z.string(),
+  results: z.array(
+    z.object({
+      title: z.string(),
+      link: z.string(),
+      snippet: z.string(),
+    })
+  ),
+});
 
-      dataStream.merge(
-        result.toUIMessageStream({ sendReasoning: true })
-      );
-    },
-    onError: () => "Опа, ошибка!",
+export async function serpAgent(
+  model: any,
+  messages: UIMessage[],
+  systemPrompt: string
+) {
+  const normalizedMessages: UIMessage[] = messages.map((m: any) => {
+    const text =
+      m.parts?.find((p: any) => p.type === 'text')?.text ||
+      (typeof m.content === 'string' ? m.content : '') ||
+      '';
+
+    return {
+      id: m.id || crypto.randomUUID(), // ✅ уникальный ID
+      role: m.role || 'user',
+      parts: [{ type: 'text' as const, text }],
+    };
   });
 
-  return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+  const last = normalizedMessages
+    .slice()
+    .reverse()
+    .find((m) => m.role === 'user');
+
+  const query =
+    last?.parts?.find((p) => p.type === 'text')?.text?.trim() || '';
+
+  // Поиск через SerpAPI
+  const resp = await fetch(
+    `https://serpapi.com/search.json?q=${encodeURIComponent(
+      query
+    )}&api_key=${process.env.SERP_API_KEY}`
+  );
+
+  const json = await resp.json();
+
+  const results =
+    json.organic_results?.slice(0, 3).map((r: any) => ({
+      title: r.title,
+      link: r.link,
+      snippet: r.snippet,
+    })) ?? [];
+
+  const extendedMessages: UIMessage[] = [
+    ...normalizedMessages,
+    {
+      id: crypto.randomUUID(),
+      role: 'user',
+      parts: [
+        {
+          type: 'text' as const,
+          text: `Результаты поиска: ${JSON.stringify(
+            results,
+            null,
+            2
+          )}\nСформулируй краткий и понятный ответ на основе этих данных.`,
+        },
+      ],
+    },
+  ];
+
+  // Структурированный вывод
+  return streamText({
+    model,
+    messages: convertToModelMessages(extendedMessages),
+    system:
+      systemPrompt +
+      '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
+    experimental_output: Output.object({
+      schema: z.object({
+        text: z.string(),
+        results: z
+          .array(
+            z.object({
+              title: z.string(),
+              link: z.string(),
+              snippet: z.string(),
+            })
+          )
+          .optional(),
+      }),
+    }),
+    experimental_transform: smoothStream(),
+  });
+}
+
+
+
+// Основной POST
+export async function POST(req: Request) {
+  const { messages, newSystemPrompt } = await req.json();
+
+  if (newSystemPrompt) {
+    await updatePrompt(newSystemPrompt);
+    cachedPrompt = newSystemPrompt;
+    return new Response(JSON.stringify({ success: true }), { status: 200 });
+  }
+
+  const systemPrompt = await ensurePrompt();
+  const lastUserMessage = messages[messages.length - 1];
+  const lastText =
+    lastUserMessage?.content ||
+    lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
+    '';
+
+  const { object: intent } = await (
+    await import('ai')
+  ).generateObject({
+    model,
+    schema: z.object({
+      type: z.enum(['chat', 'document', 'search']),
+    }),
+    prompt: `Классифицируй сообщение пользователя:
+"${lastText}"
+Если речь о создании, редактировании или анализе документа — 'document'.
+Если запрос о поиске, информации в интернете — 'search'.
+Иначе — 'chat'.`,
+  });
+
+  let stream;
+
+  // маршрутизация
+  if (intent.type === 'document') {
+    stream = await documentAgent(messages, systemPrompt);
+  } else if (intent.type === 'search') {
+    stream = await serpAgent(model,messages, systemPrompt);
+  } else {
+    stream = streamText({
+      model,
+      messages: convertToModelMessages(messages),
+      system: systemPrompt,
+      experimental_output: Output.object({ schema: baseSchema }),
+      experimental_transform: smoothStream(),
+    });
+  }
+
+  return stream.toUIMessageStreamResponse();
 }

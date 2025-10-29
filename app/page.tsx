@@ -181,42 +181,62 @@ const [currentPrompt, setCurrentPrompt] = useState<string>('');
   const { messages, sendMessage, status, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     onError: (error) => console.error(error),
-    onData: (dataPart) => {
-      console.log('Received data:', dataPart);
-     if (dataPart.type === 'data-title') {
-  console.log('Document title:', dataPart.data);
-  setDocument((prev) => ({
-    ...prev,
-    title: String(dataPart.data),
-    isStreaming: true,
-  }));
-}
-      // Очистка документа
-      if (dataPart.type === 'data-clear') {
-        console.log('Clearing document');
-        setDocument((prev) => ({
-          ...prev,
-          content: '',
-          isStreaming: true,
-        }));
-      }
-      // Добавление частей документа
-      if (dataPart.type === 'data-documentDelta') {
-        setDocument((prev) => ({
-          ...prev,
-          content: prev.content + dataPart.data,
-        }));
-      }
-
-      // Завершение документа
-      if (dataPart.type === 'data-finish') {
-        console.log('✅ Document finished');
-        setDocument((prev) => ({
-          ...prev,
+onData: (dataPart) => {
+  console.log('Received data:', dataPart);
+  
+  //Проверяем, что это обычное сообщение
+  if ('text' in dataPart && typeof dataPart.text === 'string') {
+    try {
+      const parsed = JSON.parse(dataPart.text);
+      
+      // Если есть документ - обновляем состояние
+      if (parsed.document) {
+        setDocument({
+          title: parsed.document.title,
+          content: parsed.document.content,
           isStreaming: false,
-        }));
+        });
       }
-    },
+    } catch {
+      // Не JSON - игнорируем
+    }
+  }
+
+  // Обработка data-* событий
+  if (dataPart.type === 'data-title') {
+    console.log('Document title:', dataPart.data);
+    setDocument((prev) => ({
+      ...prev,
+      title: String(dataPart.data),
+      isStreaming: true,
+    }));
+  }
+
+  if (dataPart.type === 'data-clear') {
+    console.log('Clearing document');
+    setDocument((prev) => ({
+      ...prev,
+      content: '',
+      isStreaming: true,
+    }));
+  }
+
+  if (dataPart.type === 'data-documentDelta') {
+    setDocument((prev) => ({
+      ...prev,
+      content: prev.content + dataPart.data,
+    }));
+  }
+
+  if (dataPart.type === 'data-finish') {
+    console.log('✅ Document finished');
+    setDocument((prev) => ({
+      ...prev,
+      isStreaming: false,
+    }));
+  }
+}
+
   });
 
   const handleSubmit = (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
@@ -271,10 +291,25 @@ useEffect(() => {
               return (
                 <Message from={message.role} key={message.id}>
                   <MessageContent>
-                    {textParts.map((part, i) => (
-                      <Response key={i}>{part.text}</Response>
-                    ))}
-
+                    {textParts.map((part, i) => {
+  try {
+    const parsed = JSON.parse(part.text);
+    // Если есть поле text - выводим только его
+    if (parsed.text) {
+      return <Response key={i}>{parsed.text}</Response>;
+    }
+    // Если это документ - обрабатываем отдельно
+    if (parsed.document) {
+      // Документ уже обрабатывается через onData
+      return null;
+    }
+    // Если не удалось распарсить - выводим как есть
+    return <Response key={i}>{part.text}</Response>;
+  } catch {
+    // Если не JSON - выводим как есть
+    return <Response key={i}>{part.text}</Response>;
+  }
+})}
                     {reasoningParts.map((part, i) => (
                       <Reasoning
                         key={i}
