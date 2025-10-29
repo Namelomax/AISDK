@@ -395,22 +395,38 @@ const AgentInfo = ({ message, isStreaming }: { message: any; isStreaming: boolea
                    {textParts.map((part, i) => {
   try {
     const parsed = JSON.parse(part.text);
-    
-    // ✅ Выводим только текст, без источников
-    if (parsed.text) {
-      return <Response key={`${message.id}-text-${i}`}>{parsed.text}</Response>;
-    }
-    
-    // Если это документ - обрабатываем отдельно
-    if (parsed.document) {
-      return null;
-    }
-    
-    return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
+
+    return (
+      <div key={`${message.id}-text-${i}`} className="space-y-2">
+        {/* Основной ответ AI */}
+        {parsed.text && <Response>{parsed.text}</Response>}
+
+        {/* Результаты поиска */}
+        {parsed.results && parsed.results.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Источники:</p>
+            {parsed.results.map((result: any, idx: number) => (
+              <a
+                key={`${message.id}-result-${idx}`}
+                href={result.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block p-2 text-xs border rounded-lg hover:bg-muted transition-colors"
+              >
+                <div className="font-medium text-blue-600">{result.title}</div>
+                <div className="text-muted-foreground mt-1">{result.snippet}</div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   } catch {
+    // Если part.text не JSON — просто выводим как обычный ответ
     return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
   }
 })}
+
 
                     {reasoningParts.map((part, i) => (
                       <Reasoning
