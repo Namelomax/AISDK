@@ -20,7 +20,6 @@ import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-e
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { Loader } from '@/components/ai-elements/loader';
 import { RefreshCcw, Copy, Check, Wrench } from 'lucide-react';
-import { SlidingTabBar } from '@/components/SlidingTabBar';
 import { PromptsManager } from './api/promts/PromtsManager';
 // Типы для документа
 type DocumentState = {
@@ -217,10 +216,6 @@ export default function ChatPage() {
 
   return (
     <div className="h-screen flex flex-col bg-background">
-      {/* Верхняя плашка с вкладками */}
-      <div className="border-b p-3 shrink-0">
-        <SlidingTabBar onSendPrompt={(promptText) => sendMessage({ text: promptText })} />
-      </div>
 
       {/* Основная область */}
       <div className="flex-1 flex overflow-hidden">
