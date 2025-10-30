@@ -9,5 +9,10 @@ module.exports = {
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   },
 };
+module.exports = {
+  env: {
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  },
+};
 
 export default nextConfig;

@@ -5,6 +5,12 @@ export type Document = {
   title: string;
   content: string;
 };
+export interface Prompt {
+  id: string;
+  title: string;
+  content: string;
+  isDefault: boolean;
+}
 
 export type ChatUIMessage = UIMessage & {
 };
