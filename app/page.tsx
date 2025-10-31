@@ -376,6 +376,20 @@ export default function ChatPage() {
     }
   }}
 />
+  {messages.length > 3 && (
+    <button
+      onClick={() => {
+        sendMessage({
+          text: "Всё готово, пожалуйста сформируй финальный регламент на основе всей собранной информации",
+          metadata: { currentDocument: document }
+        });
+      }}
+      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+    >
+      📋 Сформировать регламент
+    </button>
+  )}
+
 
       </div>
         </div>
