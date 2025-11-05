@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { getPrompt, updatePrompt } from '@/lib/getPromt';
 import {LanguageModel } from 'ai';
 
-export const maxDuration = 30;
+export const maxDuration = 90;
 export const runtime = 'nodejs';
 const googleWithProxy = createGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY!,
