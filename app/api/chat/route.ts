@@ -22,7 +22,6 @@ const googleWithProxy = createGoogleGenerativeAI({
 const model = google('gemini-2.5-flash');
 
 
-
 let cachedPrompt: string | null = null;
 
 async function ensurePrompt() {
@@ -31,12 +30,6 @@ async function ensurePrompt() {
   if (!cachedPrompt) cachedPrompt = await getPrompt();
   return cachedPrompt;
 }
-
-// Схема для документа
-const documentSchema = z.object({
-  title: z.string().describe('Заголовок документа'),
-  content: z.string().describe('Содержимое документа в Markdown'),
-});
 
 // Document agent - теперь с dataStream
 // Document agent - теперь с учётом текущего документа
@@ -122,12 +115,6 @@ async function documentAgent(
   dataStream.write({ type: 'text-end', id: 'doc-finish' });
 }
 
-// Схема для регламента
-const regulationSchema = z.object({
-  title: z.string().describe('Официальное название регламента'),
-  content: z.string().describe('Полный регламент в Markdown формате согласно целевой структуре'),
-  status: z.enum(['draft', 'final']).describe('Статус регламента'),
-});
 
 // Serp агент
 async function serpAgent(messages: UIMessage[], systemPrompt: string) {
@@ -209,21 +196,10 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
     experimental_transform: smoothStream(),
 });
 }
-// Определяем этап диалога на основе истории
-function determineConversationStage(messages: any[]): string {
-  const lastUserMessage = messages[messages.length - 1];
-  const messageCount = messages.filter(m => m.role === 'user').length;
-  
-  if (messageCount === 1) return 'start';
-  if (messageCount <= 3) return 'general_info';
-  if (messageCount <= 8) return 'process_details';
-  if (messageCount <= 12) return 'step_analysis';
-  return 'finalization';
-}
+
 // Основной POST
 export async function POST(req: Request) {
   const { messages, newSystemPrompt } = await req.json();
-  console.log(cachedPrompt, "cachedPrompt");
   
   const currentDocument = messages.at(-1)?.metadata?.currentDocument;
   console.log(currentDocument, "currentDocument");
@@ -474,6 +450,7 @@ async function generateFinalRegulation(
 
   const { object: regulation } = await (await import('ai')).generateObject({
     model,
+  
     system: systemPrompt + `
     
     КРИТИЧЕСКИ ВАЖНО ДЛЯ ФОРМИРОВАНИЯ РЕГЛАМЕНТА:

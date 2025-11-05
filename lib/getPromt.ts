@@ -1,4 +1,5 @@
 import Surreal from "surrealdb";
+import { RecordId } from "surrealdb";
 
 const db = new Surreal();
 
@@ -11,7 +12,6 @@ export type Prompt = {
   updated: string;
 };
 
-// Вспомогательная функция для конвертации RecordId в строку
 function convertToPrompt(record: any): Prompt {
   return {
     id: record.id.toString(),
@@ -26,7 +26,7 @@ function convertToPrompt(record: any): Prompt {
 let isConnected = false;
 
 async function connectDB() {
-  if (isConnected) return; // уже подключено
+  if (isConnected) return;
 
   await db.connect(
     "wss://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/rpc",
@@ -59,111 +59,132 @@ async function connectDB() {
   }
 }
 
+// 🧠 Вспомогательная функция — всегда возвращает корректный формат id
+function normalizeId(id: string): string {
+  return id.startsWith("prompts:") ? id : `prompts:${id}`;
+}
 
-// Получить все промпты
+// 📄 Получить все промпты
 export async function getAllPrompts(): Promise<Prompt[]> {
   await connectDB();
   const result = (await db.query(`SELECT * FROM prompts ORDER BY updated DESC;`)) as [any[]];
-  const records = result?.[0] ?? [];
-  return records.map(convertToPrompt);
+  return (result?.[0] ?? []).map(convertToPrompt);
 }
 
-// Получить один промпт по ID
+// 🔍 Получить один промпт
 export async function getPromptById(id: string): Promise<Prompt | null> {
   await connectDB();
-  const prompt = await db.select(id);
+  const recordId = normalizeId(id);
+  const prompt = await db.select(recordId);
   if (!prompt) return null;
-  return convertToPrompt(prompt);
+  return convertToPrompt(Array.isArray(prompt) ? prompt[0] : prompt);
 }
 
-// Создать новый промпт
+// 🆕 Создать промпт
 export async function createPrompt(title: string, content: string): Promise<Prompt> {
   await connectDB();
-  const [prompt] = await db.create("prompts", { 
-    title, 
-    content,
-    isDefault: false 
-  });
+  const [prompt] = await db.create("prompts", { title, content, isDefault: false });
   return convertToPrompt(prompt);
 }
 
-// Обновить промпт
+// ✏️ Обновить промпт
 export async function updatePromptById(id: string, title: string, content: string): Promise<Prompt> {
   await connectDB();
-  const prompt = await db.select(id);
 
-  // проверка
-  if (!prompt || !prompt[0]) {
+  // нормализация
+  const cleanId = id.replace(/^prompts:/, "");
+  const recordId = new RecordId("prompts", cleanId);
+
+  console.log("🧠 recordId:", recordId.toString());
+
+  const prompt = await db.select(recordId);
+  console.log("📦 prompt:", prompt);
+
+  const promptData = Array.isArray(prompt) ? prompt[0] : prompt;
+
+  if (!promptData) {
     throw new Error("Prompt not found");
   }
-
-  const promptData = convertToPrompt(Array.isArray(prompt) ? prompt[0] : prompt);
 
   if (promptData.isDefault) {
     throw new Error("Cannot edit default prompt");
   }
 
-  const [updated] = await db.merge(id, { title, content });
-  return convertToPrompt(updated);
+  const result = await db.query(
+    `UPDATE ${recordId} SET title = $title, content = $content, updated = time::now() RETURN AFTER;`,
+    { title, content }
+  );
+
+  const updatedRecords = (result as any)[0]?.result ?? [];
+  if (!updatedRecords.length) {
+    throw new Error("Failed to update prompt");
+  }
+
+  return convertToPrompt(updatedRecords[0]);
 }
 
 
-// Удалить промпт
+// 🗑️ Удалить промпт
 export async function deletePromptById(id: string): Promise<void> {
   await connectDB();
-  const prompt = await db.select(id);
-  if (!prompt) {
+
+  // нормализуем ID
+  const cleanId = id.replace(/^prompts:/, "");
+  const recordId = new RecordId("prompts", cleanId);
+
+  console.log("🗑 recordId:", recordId.toString());
+
+  // получаем запись
+  const prompt = await db.select(recordId);
+  const promptData = Array.isArray(prompt) ? prompt[0] : prompt;
+
+  if (!promptData) {
     throw new Error("Prompt not found");
   }
-  
-  const promptData = convertToPrompt(prompt);
+
   if (promptData.isDefault) {
     throw new Error("Cannot delete default prompt");
   }
-  
-  await db.delete(id);
+
+  // удаляем
+  await db.delete(recordId);
+  console.log("✅ Prompt deleted:", recordId.toString());
 }
 
-// Получить дефолтный промпт (для совместимости)
+
+// 🧱 Получить дефолтный промпт
 export async function getPrompt(): Promise<string> {
   await connectDB();
-  const result = (await db.query(
-    `SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`
-  )) as [any[]];
-  
+  const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`)) as [any[]];
   const records = result?.[0] ?? [];
   const record = records[0];
-  
-  // Если нет дефолтного - создаём
-if (!record) {
+
+  if (!record) {
     const [newPrompt] = await db.create("prompts", {
       title: "Default Assistant",
       content: "Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.",
-      isDefault: true
+      isDefault: true,
     });
     return convertToPrompt(newPrompt).content;
   }
-  
+
   return record.content;
 }
 
-// Обновить дефолтный промпт
+// 🧱 Обновить дефолтный промпт
 export async function updatePrompt(content: string): Promise<void> {
   await connectDB();
-  const result = (await db.query(
-    `SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`
-  )) as [any[]];
-  
+  const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`)) as [any[]];
   const records = result?.[0] ?? [];
   const record = records[0];
-  
+
   if (record) {
     await db.merge(record.id.toString(), { content });
   } else {
     await db.create("prompts", {
       title: "Default Assistant",
       content,
-      isDefault: true
+      isDefault: true,
     });
   }
 }

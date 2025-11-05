@@ -133,10 +133,10 @@ const handleSelect = async (id: string) => {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       <Select value={selectedId} onValueChange={handleSelect}>
-        <SelectTrigger className="flex-1">
+        <SelectTrigger className="flex-1 w-[550px]">
           <SelectValue placeholder="Выберите промпт..." />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="flex-1 w-[550px]">
           {prompts.map(p => (
             <SelectItem key={p.id} value={p.id}>{p.title}</SelectItem>
           ))}
