@@ -1,4 +1,13 @@
 'use client';
+import {
+  PromptInputAttachments,
+  PromptInputAttachment,
+  PromptInputActionMenu,
+  PromptInputActionMenuTrigger,
+  PromptInputActionMenuContent,
+  PromptInputActionAddAttachments,
+} from '@/components/ai-elements/prompt-input';
+import { convertBlobFilesToDataURLs } from '@/lib/utils';
 
 import { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
@@ -9,6 +18,7 @@ import {
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation';
 import { Message, MessageContent } from '@/components/ai-elements/message';
+import { usePromptInputAttachments } from '@/components/ai-elements/prompt-input';
 import { 
   PromptInput, 
   PromptInputTextarea, 
@@ -78,22 +88,6 @@ useEffect(() => {
 
   return () => clearTimeout(timeout);
 }, [document.content, document.isStreaming]);
-
-  // Функция для автоформатирования Markdown
-const normalizeMarkdown = (text: string) => {
-  return (
-    text
-      // Добавляем перевод после заголовков, если его нет
-      .replace(/(#+ [^\n]+)(?!\n)/g, '$1\n')
-      // Добавляем перенос перед следующим заголовком
-      .replace(/([^\n])\n(##+)/g, '$1\n\n$2')
-      // Убираем тройные переводы строк
-      .replace(/\n{3,}/g, '\n\n')
-      // 🧹 Убираем пробелы в конце каждой строки (это ключевая строка!)
-      .replace(/[ \t]+$/gm, '')
-      .trim()
-  );
-};
 
 
   const handleCopy = async () => {
@@ -191,18 +185,22 @@ export default function ChatPage() {
     },
   });
 
-  const handleSubmit = (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (message.text?.trim()) {
-      sendMessage({
-  text: message.text,
-  metadata: { currentDocument: document },
-});
+const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
 
-      
-      setInput('');
-    }
-  };
+  const hasText = Boolean(message.text);
+  const hasAttachments = Boolean(message.files?.length);
+  if (!(hasText || hasAttachments)) return;
+  // Отправляем сообщение с файлами
+  sendMessage({
+    text: message.text || 'Отправлено с вложениями',
+    files: message.files,
+  });
+
+  setInput('');
+};
+
+
 
   const handleCopy = async (text: string, id: string) => {
     try {
@@ -339,19 +337,39 @@ export default function ChatPage() {
           {/* Поле ввода */}
           <div className="border-t p-4">
             <div className="max-w-3xl mx-auto">
-              <PromptInput onSubmit={handleSubmit} className="relative">
-                <PromptInputTextarea
-                  value={input}
-                  placeholder="Напишите сообщение..."
-                  onChange={(e) => setInput(e.target.value)}
-                  className="min-h-[60px] pr-12 resize-none"
-                />
-                <PromptInputSubmit
-                  status={status === 'streaming' ? 'streaming' : 'ready'}
-                  disabled={!input.trim()}
-                  className="absolute bottom-3 right-3"
-                />
-              </PromptInput>
+              <PromptInput
+  onSubmit={handleSubmit}
+  className="relative border rounded-lg shadow-sm"
+  multiple
+  globalDrop
+>
+  <PromptInputAttachments>
+    {(attachment) => (
+        <PromptInputAttachment data={attachment} />
+      )}
+  </PromptInputAttachments>
+
+  <PromptInputTextarea
+    value={input}
+    onChange={(e) => setInput(e.target.value)}
+    placeholder="Напишите сообщение или прикрепите файл..."
+    className="min-h-[60px] pr-12 resize-none"
+  />
+
+  <PromptInputActionMenu>
+    <PromptInputActionMenuTrigger className="absolute right-10 bottom-3" />
+    <PromptInputActionMenuContent>
+      <PromptInputActionAddAttachments />
+    </PromptInputActionMenuContent>
+  </PromptInputActionMenu>
+
+  <PromptInputSubmit
+    status={status === 'streaming' ? 'streaming' : 'ready'}
+    disabled={!input.trim()}
+    className="absolute bottom-3 right-3"
+  />
+</PromptInput>
+
             </div>
           </div>
            {/* Менеджер промптов под полем ввода */}

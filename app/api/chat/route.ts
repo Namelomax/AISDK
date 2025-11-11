@@ -23,6 +23,26 @@ const model = google('gemini-2.5-flash');
 
 
 let cachedPrompt: string | null = null;
+function convertAttachmentsToParts(attachments: string[] = []) {
+  return attachments
+    .map((att) => {
+      const match = att.match(/^data:(.*?);base64,(.*)$/);
+      if (!match) return null;
+      const [, mime, base64] = match;
+
+      return {
+        type: "inline_data",
+        inline_data: {
+          mime_type: mime,
+          data: base64,
+        },
+      };
+    })
+    .filter(Boolean);
+}
+
+
+
 
 async function ensurePrompt() {
   console.log(cachedPrompt,"cachedPrompt")
@@ -31,8 +51,7 @@ async function ensurePrompt() {
   return cachedPrompt;
 }
 
-// Document agent - теперь с dataStream
-// Document agent - теперь с учётом текущего документа
+// Document agent
 async function documentAgent(
   messages: any[],
   systemPrompt: string,
@@ -44,7 +63,7 @@ async function documentAgent(
     lastUserMessage?.content ||
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
-
+    
   const isNew = !currentDocument?.content?.trim();
 
   const prompt = isNew
@@ -200,11 +219,11 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
 // Основной POST
 export async function POST(req: Request) {
   const { messages, newSystemPrompt } = await req.json();
-  
+
   const currentDocument = messages.at(-1)?.metadata?.currentDocument;
-  console.log(currentDocument, "currentDocument");
-  console.log(messages.at(-1), "message");
-  
+  console.log(currentDocument, 'currentDocument');
+  console.log(messages.at(-1), 'message');
+
   if (newSystemPrompt) {
     await updatePrompt(newSystemPrompt);
     cachedPrompt = newSystemPrompt;
@@ -212,35 +231,39 @@ export async function POST(req: Request) {
   }
 
   const systemPrompt = await ensurePrompt();
+
   const lastUserMessage = messages[messages.length - 1];
   const lastText =
     lastUserMessage?.content ||
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
-
-  // Определяем этап диалога на основе истории
-function determineConversationStage(messages: any[]): ConversationStage {
-  const userMessages = messages.filter(m => m.role === 'user');
-  const messageCount = userMessages.length;
   
-  if (messageCount === 1) return 'start';
-  if (messageCount <= 3) return 'general_info';
-  if (messageCount <= 6) return 'process_overview';
-  if (messageCount <= 10) return 'step_details';
-  if (messageCount <= 15) return 'scenario_analysis';
-  return 'completion_ready';
-}
+  // ✅ теперь файлы уже внутри messages — ничего дополнительно не нужно
+  const extendedMessages: UIMessage[] = messages;
+
+  // Определяем этап диалога
+  function determineConversationStage(messages: any[]): ConversationStage {
+    const userMessages = messages.filter((m) => m.role === 'user');
+    const count = userMessages.length;
+
+    if (count === 1) return 'start';
+    if (count <= 3) return 'general_info';
+    if (count <= 6) return 'process_overview';
+    if (count <= 10) return 'step_details';
+    if (count <= 15) return 'scenario_analysis';
+    return 'completion_ready';
+  }
 
   const conversationStage = determineConversationStage(messages);
+
   console.log('Conversation stage:', conversationStage);
-console.log('🔍 Debug Info:', {
-  totalMessages: messages.length,
-  userMessages: messages.filter((m: { role: string; }) => m.role === 'user').length,
-  lastUserMessage: lastText.substring(0, 200),
-  conversationStage,
-  cachedPromptLength: cachedPrompt?.length
-});
-  // Классифицируем намерение пользователя с учетом этапа диалога
+  console.log('🔍 Debug Info:', {
+    totalMessages: messages.length,
+    lastUserMessage: lastText.substring(0, 150),
+    conversationStage,
+  });
+
+  // Определяем намерение пользователя
   const { object: intent } = await (await import('ai')).generateObject({
     model,
     system: systemPrompt,
@@ -248,112 +271,123 @@ console.log('🔍 Debug Info:', {
       google: {
         baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
         stream: true,
-        thinkingConfig: {
-          thinkingBudget: -1,
-          includeThoughts: true,
-        },
+        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
       },
     },
     schema: z.object({
-      type: z.enum(['chat', 'document', 'search', 'generate_regulation']),
+      type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
     }),
-    
     prompt: `
 Ты — классификатор пользовательских сообщений.
 
-ТЕКУЩИЙ ЭТАП ДИАЛОГА: ${conversationStage}
-СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
+Этап диалога: ${conversationStage}
+Сообщение пользователя:
 """
 ${lastText}
 """
 
-Варианты классов:
-- **generate_regulation** - если пользователь явно говорит "завершить", "сформировать регламент", "все готово", "приступай к формированию", ИЛИ если диалог естественно завершен
-- **document** — если пользователь хочет создать, изменить, удалить, переименовать промежуточный документ  
-- **search** — если пользователь просит найти или получить информацию из интернета  
-- **chat** — продолжение диалога по сбору информации для регламента
-
-ОСОБОЕ ВНИМАНИЕ: 
-- На этапе "completion_ready" склоняйся к generate_regulation если сообщение похоже на завершение
-- НЕ используй document для формирования финального регламента - только generate_regulation
-
-Ответь только одним словом из списка:
-generate_regulation | document | search | chat
-`
+Варианты:
+- generate_regulation — завершение, формирование регламента
+- document — редактирование промежуточного документа
+- search — запрос на поиск информации
+- chat — обычное продолжение диалога
+- casual — общение, комментарии, анализ, пояснения, если пользователь просит объяснение, резюме, краткое содержание или просто ответ (включая "выведи, что в файлах")
+Ответь только одним словом из списка выше.
+`,
   });
 
   console.log('Detected intent:', intent.type);
 
-  // Если нужно сгенерировать регламент - используем специальный агент
+  // === 🧠 Роутинг по агентам ===
+
   if (intent.type === 'generate_regulation') {
     const stream = createUIMessageStream({
       originalMessages: messages,
-      execute: async ({ writer: dataStream }) => {
+      execute: async ({ writer }) => {
         try {
-          await generateFinalRegulation(messages, systemPrompt, dataStream);
+          await generateFinalRegulation(messages, systemPrompt, writer);
         } catch (error) {
           console.error('Regulation generation error:', error);
-          dataStream.write({ type: 'text-start', id: 'error' });
-          dataStream.write({
-            type: 'text-delta', 
+          writer.write({ type: 'text-start', id: 'error' });
+          writer.write({
+            type: 'text-delta',
             id: 'error',
-            delta: 'Произошла ошибка при формировании регламента. Пожалуйста, попробуйте еще раз.'
+            delta:
+              'Произошла ошибка при формировании регламента. Попробуйте снова.',
           });
-          dataStream.write({ type: 'text-end', id: 'error' });
+          writer.write({ type: 'text-end', id: 'error' });
         }
       },
     });
-
     return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   }
 
-  // Для document используем UIMessageStream чтобы передавать данные в DocumentPanel
   if (intent.type === 'document') {
     const stream = createUIMessageStream({
       originalMessages: messages,
-      execute: async ({ writer: dataStream }) => {
+      execute: async ({ writer }) => {
         try {
-          await documentAgent(messages, systemPrompt, dataStream, currentDocument);
+          await documentAgent(messages, systemPrompt, writer, currentDocument);
         } catch (error) {
           console.error('Document agent error:', error);
         }
       },
     });
-
     return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   }
 
-  // Для search и chat используем обычный стриминг
-  let stream;
-
   if (intent.type === 'search') {
-    stream = await serpAgent(messages, systemPrompt);
-  } else {
-    // Основной диалог - продолжаем сбор информации с учетом этапа
-    const stageSpecificPrompt = getStageSpecificPrompt(conversationStage);
-    
-    stream = streamText({
+    const stream = await serpAgent(messages, systemPrompt);
+    return stream.toUIMessageStreamResponse();
+  }
+
+  if (intent.type === 'casual') {
+    const stream = streamText({
       model,
       providerOptions: {
         google: {
           baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
           stream: true,
-          thinkingConfig: {
-            thinkingBudget: -1,
-            includeThoughts: true,
-          },
+          thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
         },
       },
       messages: convertToModelMessages(messages),
-      system: systemPrompt + stageSpecificPrompt,
+      system:
+        systemPrompt +
+        `
+Ты — дружелюбный ассистент. Отвечай просто и понятно. Если есть дополнительная информация, используй её.
+`,
       experimental_output: Output.object({
         schema: z.object({
-          text: z.string().describe('Текстовый ответ пользователю для продолжения диалога'),
+          text: z.string().describe('Короткий ответ пользователю.'),
         }),
       }),
       experimental_transform: smoothStream(),
     });
+
+    return stream.toUIMessageStreamResponse();
   }
+
+  // Основной диалог
+  const stageSpecificPrompt = getStageSpecificPrompt(conversationStage);
+  const stream = streamText({
+    model,
+    providerOptions: {
+      google: {
+        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
+        stream: true,
+        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
+      },
+    },
+    messages: convertToModelMessages(extendedMessages),
+    system: systemPrompt + stageSpecificPrompt,
+    experimental_output: Output.object({
+      schema: z.object({
+        text: z.string().describe('Ответ пользователю для продолжения диалога'),
+      }),
+    }),
+    experimental_transform: smoothStream(),
+  });
 
   return stream.toUIMessageStreamResponse();
 }
