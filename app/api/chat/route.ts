@@ -7,11 +7,9 @@ import {
   smoothStream,
   createUIMessageStream,
   JsonToSseTransformStream,
-  wrapLanguageModel,
 } from 'ai';
 import { z } from 'zod';
 import { getPrompt, updatePrompt } from '@/lib/getPromt';
-import {LanguageModel } from 'ai';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -23,25 +21,6 @@ const model = google('gemini-2.5-flash');
 
 
 let cachedPrompt: string | null = null;
-function convertAttachmentsToParts(attachments: string[] = []) {
-  return attachments
-    .map((att) => {
-      const match = att.match(/^data:(.*?);base64,(.*)$/);
-      if (!match) return null;
-      const [, mime, base64] = match;
-
-      return {
-        type: "inline_data",
-        inline_data: {
-          mime_type: mime,
-          data: base64,
-        },
-      };
-    })
-    .filter(Boolean);
-}
-
-
 
 
 async function ensurePrompt() {
@@ -298,8 +277,7 @@ ${lastText}
 
   console.log('Detected intent:', intent.type);
 
-  // === 🧠 Роутинг по агентам ===
-
+  // === Роутинг по агентам ===
   if (intent.type === 'generate_regulation') {
     const stream = createUIMessageStream({
       originalMessages: messages,
@@ -392,7 +370,6 @@ ${lastText}
   return stream.toUIMessageStreamResponse();
 }
 
-// Функция для получения промпта в зависимости от этапа
 type ConversationStage = 
   | 'start' 
   | 'general_info' 
@@ -536,14 +513,13 @@ async function generateFinalRegulation(
     prompt: `На основе всей истории диалога сформируй финальный регламент. Используй ТОЛЬКО информацию из диалога:\n\n${conversationContext}`
   });
 
-  // Стриминг регламента в документ
+  // Стриминг в документ
   dataStream.write({ type: 'data-clear', data: null });
   dataStream.write({
     type: 'data-title', 
     data: regulation.title || 'Регламент процесса'
   });
 
-  // Стриминг контента
   const content = regulation.content.replace(/\\n/g, '\n').replace(/\n{3,}/g, '\n\n');
   const words = content.split(' ');
   

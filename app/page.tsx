@@ -7,18 +7,17 @@ import {
   PromptInputActionMenuContent,
   PromptInputActionAddAttachments,
 } from '@/components/ai-elements/prompt-input';
-import { convertBlobFilesToDataURLs } from '@/lib/utils';
 
 import { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport } from 'ai';
+import { DefaultChatTransport, FileUIPart } from 'ai';
+import { extractTextFromFileUIPart, isTextExtractable } from '@/lib/utils';
 import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation';
 import { Message, MessageContent } from '@/components/ai-elements/message';
-import { usePromptInputAttachments } from '@/components/ai-elements/prompt-input';
 import { 
   PromptInput, 
   PromptInputTextarea, 
@@ -191,14 +190,41 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
   const hasText = Boolean(message.text);
   const hasAttachments = Boolean(message.files?.length);
   if (!(hasText || hasAttachments)) return;
-  // Отправляем сообщение с файлами
+
+  let hiddenPart = "";
+  const preparedFiles: FileUIPart[] = [];
+
+  if (message.files?.length) {
+    for (const file of message.files as FileUIPart[]) {
+      const mime = file.mediaType;
+
+      if (isTextExtractable(mime)) {
+        try {
+          const extracted = await extractTextFromFileUIPart(file);
+
+          hiddenPart += `<AI-HIDDEN>\n${extracted}\n</AI-HIDDEN>\n`;
+
+          // ❗ DOCX/XLSX НЕ передаём Gemini как файлы
+          continue;
+        } catch (e) {
+          console.error("Failed extraction:", e);
+        }
+      }
+
+      // другие форматы — как есть
+      preparedFiles.push(file);
+    }
+  }
+
   sendMessage({
-    text: message.text || 'Отправлено с вложениями',
-    files: message.files,
+    text: `${hiddenPart}${(message.text || "").trim()}`,
+    files: preparedFiles, // только FileUIPart[]
   });
 
-  setInput('');
+  setInput("");
 };
+
+
 
 
 
@@ -250,46 +276,60 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
                           <ReasoningContent>{part.text}</ReasoningContent>
                         </Reasoning>
                       ))}
-                      {textParts.map((part, i) => {
-                        try {
-                          const parsed = JSON.parse(part.text);
-                          
-                          // Если есть только текст - выводим его
-                          if (parsed.text && !parsed.document && !parsed.results) {
-                            return <Response key={`${message.id}-text-${i}`}>{parsed.text}</Response>;
-                          }
+{textParts.map((part, i) => {
+  // --- Скрываем только AI-HIDDEN ---
+  const clean = part.text.trimStart();
 
-                          // Если есть результаты поиска - выводим их
-                          if (parsed.results) {
-                            return (
-                              <div key={`${message.id}-search-${i}`} className="space-y-2">
-                                <Response>{parsed.text || 'Результаты поиска:'}</Response>
-                                <div className="mt-2 space-y-2 text-sm">
-                                  {parsed.results.map((result: any, idx: number) => (
-                                    <div key={idx} className="p-3 bg-muted/50 rounded-lg">
-                                      <a
-                                        href={result.link}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="font-medium text-blue-600 hover:underline"
-                                      >
-                                        {result.title}
-                                      </a>
-                                      <p className="text-xs text-muted-foreground mt-1">{result.snippet}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          }
+  // --- Остальное как раньше ---
+  try {
+    const parsed = JSON.parse(part.text);
 
-                          // Обычный текст
-                          return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
-                        } catch {
-                          // Не JSON - выводим как есть
-                          return <Response key={`${message.id}-text-${i}`}>{part.text}</Response>;
-                        }
-                      })}
+    if (parsed.text && !parsed.document && !parsed.results) {
+      return (
+        <Response key={`${message.id}-text-${i}`}>
+          {parsed.text}
+        </Response>
+      );
+    }
+
+    if (parsed.results) {
+      return (
+        <div key={`${message.id}-search-${i}`} className="space-y-2">
+          <Response>{parsed.text || "Результаты поиска:"}</Response>
+          <div className="mt-2 space-y-2 text-sm">
+            {parsed.results.map((result: any, idx: number) => (
+              <div key={idx} className="p-3 bg-muted/50 rounded-lg">
+                <a
+                  href={result.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-blue-600 hover:underline"
+                >
+                  {result.title}
+                </a>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {result.snippet}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <Response key={`${message.id}-text-${i}`}>
+        {part.text}
+      </Response>
+    );
+  } catch {
+    return (
+      <Response key={`${message.id}-text-${i}`}>
+        {part.text}
+      </Response>
+    );
+  }
+})}
 
                       
 
@@ -338,37 +378,37 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
           <div className="border-t p-4">
             <div className="max-w-3xl mx-auto">
               <PromptInput
-  onSubmit={handleSubmit}
-  className="relative border rounded-lg shadow-sm"
-  multiple
-  globalDrop
->
-  <PromptInputAttachments>
-    {(attachment) => (
-        <PromptInputAttachment data={attachment} />
-      )}
-  </PromptInputAttachments>
+                onSubmit={handleSubmit}
+                className="relative border rounded-lg shadow-sm"
+                multiple
+                globalDrop
+              >
+                <PromptInputAttachments>
+                  {(attachment) => (
+                      <PromptInputAttachment data={attachment} />
+                    )}
+                </PromptInputAttachments>
 
-  <PromptInputTextarea
-    value={input}
-    onChange={(e) => setInput(e.target.value)}
-    placeholder="Напишите сообщение или прикрепите файл..."
-    className="min-h-[60px] pr-12 resize-none"
-  />
+                <PromptInputTextarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Напишите сообщение или прикрепите файл..."
+                  className="min-h-[60px] pr-12 resize-none"
+                />
 
-  <PromptInputActionMenu>
-    <PromptInputActionMenuTrigger className="absolute right-10 bottom-3" />
-    <PromptInputActionMenuContent>
-      <PromptInputActionAddAttachments />
-    </PromptInputActionMenuContent>
-  </PromptInputActionMenu>
+                <PromptInputActionMenu>
+                  <PromptInputActionMenuTrigger className="absolute right-10 bottom-3" />
+                  <PromptInputActionMenuContent>
+                    <PromptInputActionAddAttachments />
+                  </PromptInputActionMenuContent>
+                </PromptInputActionMenu>
 
-  <PromptInputSubmit
-    status={status === 'streaming' ? 'streaming' : 'ready'}
-    disabled={!input.trim()}
-    className="absolute bottom-3 right-3"
-  />
-</PromptInput>
+                <PromptInputSubmit
+                  status={status === 'streaming' ? 'streaming' : 'ready'}
+                  disabled={!input.trim()}
+                  className="absolute bottom-3 right-3"
+                />
+              </PromptInput>
 
             </div>
           </div>
@@ -377,17 +417,16 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
 <PromptsManager
   className="mb-4"
   onPromptSelect={async (content) => {
-    // ⚡ Отправляем промт в API сразу
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: [],           // пустой массив сообщений
-          newSystemPrompt: content,  // текст выбранного промта
+          messages: [],
+          newSystemPrompt: content,
         }),
       });
-
       if (!res.ok) throw new Error('Failed to update system prompt');
       console.log('✅ System prompt updated');
     } catch (err) {
@@ -397,7 +436,6 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
 />  
       </div>
         </div>
-
         {/* Правая часть — документ */}
         <DocumentPanel document={document} />
       </div>

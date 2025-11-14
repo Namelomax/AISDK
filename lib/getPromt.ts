@@ -24,7 +24,7 @@ function convertToPrompt(record: any): Prompt {
 }
 
 let isConnected = false;
-
+// Функция для подключения к бд
 async function connectDB() {
   if (isConnected) return;
 
@@ -59,19 +59,19 @@ async function connectDB() {
   }
 }
 
-// 🧠 Вспомогательная функция — всегда возвращает корректный формат id
+// Вспомогательная функция — всегда возвращает корректный формат id
 function normalizeId(id: string): string {
   return id.startsWith("prompts:") ? id : `prompts:${id}`;
 }
 
-// 📄 Получить все промпты
+// Получить все промпты
 export async function getAllPrompts(): Promise<Prompt[]> {
   await connectDB();
   const result = (await db.query(`SELECT * FROM prompts ORDER BY updated DESC;`)) as [any[]];
   return (result?.[0] ?? []).map(convertToPrompt);
 }
 
-// 🔍 Получить один промпт
+// Получить промпт по id
 export async function getPromptById(id: string): Promise<Prompt | null> {
   await connectDB();
   const recordId = normalizeId(id);
@@ -80,18 +80,17 @@ export async function getPromptById(id: string): Promise<Prompt | null> {
   return convertToPrompt(Array.isArray(prompt) ? prompt[0] : prompt);
 }
 
-// 🆕 Создать промпт
+// Создать промпт
 export async function createPrompt(title: string, content: string): Promise<Prompt> {
   await connectDB();
   const [prompt] = await db.create("prompts", { title, content, isDefault: false });
   return convertToPrompt(prompt);
 }
 
-// ✏️ Обновить промпт
+// Обновить промпт
 export async function updatePromptById(id: string, title: string, content: string): Promise<Prompt> {
   await connectDB();
 
-  // нормализация
   const cleanId = id.replace(/^prompts:/, "");
   const recordId = new RecordId("prompts", cleanId);
 
@@ -124,17 +123,15 @@ export async function updatePromptById(id: string, title: string, content: strin
 }
 
 
-// 🗑️ Удалить промпт
+// Удалить промпт
 export async function deletePromptById(id: string): Promise<void> {
   await connectDB();
 
-  // нормализуем ID
   const cleanId = id.replace(/^prompts:/, "");
   const recordId = new RecordId("prompts", cleanId);
 
   console.log("🗑 recordId:", recordId.toString());
 
-  // получаем запись
   const prompt = await db.select(recordId);
   const promptData = Array.isArray(prompt) ? prompt[0] : prompt;
 
@@ -146,13 +143,12 @@ export async function deletePromptById(id: string): Promise<void> {
     throw new Error("Cannot delete default prompt");
   }
 
-  // удаляем
   await db.delete(recordId);
   console.log("✅ Prompt deleted:", recordId.toString());
 }
 
 
-// 🧱 Получить дефолтный промпт
+// Получить дефолтный промпт
 export async function getPrompt(): Promise<string> {
   await connectDB();
   const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`)) as [any[]];
@@ -171,7 +167,7 @@ export async function getPrompt(): Promise<string> {
   return record.content;
 }
 
-// 🧱 Обновить дефолтный промпт
+// Обновить дефолтный промпт
 export async function updatePrompt(content: string): Promise<void> {
   await connectDB();
   const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`)) as [any[]];
