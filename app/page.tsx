@@ -8,7 +8,7 @@ import {
   PromptInputActionAddAttachments,
 } from '@/components/ai-elements/prompt-input';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, FileUIPart } from 'ai';
 import { extractTextFromFileUIPart, isTextExtractable } from '@/lib/utils';
@@ -28,7 +28,7 @@ import { Response } from '@/components/ai-elements/response';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { Loader } from '@/components/ai-elements/loader';
-import { RefreshCcw, Copy, Check, Wrench } from 'lucide-react';
+import { RefreshCcw, Copy, Check, Wrench, Pencil } from 'lucide-react';
 import { PromptsManager } from './api/promts/PromtsManager';
 // Типы для документа
 type DocumentState = {
@@ -135,6 +135,13 @@ useEffect(() => {
 
 export default function ChatPage() {
   const [input, setInput] = useState('');
+  const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  // initialMessages теперь используется только как начальное пустое значение;
+  // дальнейшая загрузка идет напрямую через setMessages из useChat
+  const [initialMessages] = useState<any[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [document, setDocument] = useState<DocumentState>({
     title: '',
@@ -142,8 +149,37 @@ export default function ChatPage() {
     isStreaming: false,
   });
 
-  const { messages, sendMessage, status, regenerate } = useChat({
-    transport: new DefaultChatTransport({ api: '/api/chat' }),
+  // Custom fetch to inject userId and conversationId into every chat request body
+  const [conversationsList, setConversationsList] = useState<any[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
+  // Нормализация сообщений из БД в формат UIMessage
+  function toUIMessages(raw: any[]): any[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map(m => ({
+      id: m.id,
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      parts: Array.isArray(m.parts) && m.parts.length > 0
+        ? m.parts
+        : [{ type: 'text', text: m.text || '' }],
+      metadata: m.metadata || {},
+    }));
+  }
+
+  // Build transport API URL with userId and conversationId as query params
+  const transport = useMemo(() => {
+    const base = '/api/chat';
+    const params: string[] = [];
+    if (authUser?.id) params.push(`userId=${encodeURIComponent(authUser.id)}`);
+    if (conversationId) params.push(`conversationId=${encodeURIComponent(conversationId)}`);
+    const api = params.length ? `${base}?${params.join('&')}` : base;
+    return new DefaultChatTransport({ api });
+  }, [authUser?.id, conversationId]);
+
+  const chatKey = `${conversationId ?? 'no'}-${authUser?.id ?? 'anon'}`;
+  const { messages, sendMessage, status, regenerate, setMessages } = useChat({
+    transport,
+    messages: initialMessages,
     onError: (error) => console.error('Chat error:', error),
     onData: (dataPart) => {
       console.log('📥 Received data:', dataPart);
@@ -184,8 +220,198 @@ export default function ChatPage() {
     },
   });
 
+  // Persist conversation after each assistant response finishes streaming
+  const [lastSavedAssistantId, setLastSavedAssistantId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!authUser?.id || !conversationId) return;
+    if (String(conversationId).startsWith('local-')) return; // don't persist local placeholder
+    if (status === 'streaming') return;
+    const last = messages.at(-1);
+    if (!last || last.role !== 'assistant') return;
+    if (last.id === lastSavedAssistantId) return;
+    (async () => {
+      try {
+        const resp = await fetch('/api/conversations', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId, messages }),
+        });
+        const j = await resp.json();
+        if (j?.success) {
+          setLastSavedAssistantId(last.id);
+          // локально обновляем сохранённый разговор без повторной загрузки
+          setConversationsList(prev => prev.map(conv => conv.id === conversationId ? { ...conv, messages: messages } : conv));
+        }
+      } catch (e) {
+        console.warn('Failed to persist conversation after finish', e);
+      }
+    })();
+  }, [status, messages, authUser?.id, conversationId, lastSavedAssistantId]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('authUser');
+      if (raw) setAuthUser(JSON.parse(raw));
+    } catch (e) {
+      /* ignore */
+    }
+  }, []);
+
+  // When authUser is present (including after page reload), fetch conversations
+  useEffect(() => {
+    if (!authUser?.id) return;
+    (async () => {
+      try {
+        const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(authUser.id)}`);
+        const j = await resp.json();
+        if (j?.success) {
+            // Ensure we parse `messages_raw` fallback if server didn't provide `messages` array.
+            const convs = (j.conversations || []).map((c: any) => {
+              let msgs = c.messages;
+              if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
+                try {
+                  const parsed = JSON.parse(c.messages_raw);
+                  if (Array.isArray(parsed)) msgs = parsed;
+                } catch (e) {
+                  // ignore
+                }
+              }
+              return { ...c, messages: msgs };
+            });
+            setConversationsList(convs);
+            // Try to restore the last active conversation from localStorage
+            const savedConvId = localStorage.getItem('activeConversationId');
+            let activeConv = null;
+            
+            if (savedConvId && j.conversations) {
+              activeConv = j.conversations.find((c: any) => c.id === savedConvId);
+            }
+            
+            // If no saved conversation, use first one
+            if (!activeConv && j.conversations && j.conversations.length > 0) {
+              activeConv = j.conversations[0];
+            }
+            
+            if (activeConv) {
+              setConversationId(activeConv.id);
+              setMessages(toUIMessages(activeConv.messages));
+              localStorage.setItem('activeConversationId', activeConv.id);
+            } else {
+                      // don't auto-create an empty conversation here; wait until the user sends the first message
+                      setConversationsList([]);
+                      setConversationId(null);
+            }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch conversations on load', e);
+      }
+    })();
+  }, [authUser?.id]);
+
+  const handleAuth = async () => {
+    if (!authUsername || !authPassword) return;
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: authMode, username: authUsername, password: authPassword }),
+      });
+      const json = await res.json();
+      if (json?.success && json.user) {
+        setAuthUser(json.user);
+        localStorage.setItem('authUser', JSON.stringify(json.user));
+        setAuthPassword('');
+        // Load user's last conversation if provided
+        if (Array.isArray(json.conversations) && json.conversations.length > 0) {
+          try {
+            const convs = json.conversations.map((c: any) => {
+              let msgs = c.messages;
+              if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
+                try {
+                  const parsed = JSON.parse(c.messages_raw);
+                  if (Array.isArray(parsed)) msgs = parsed;
+                } catch (e) {
+                  /* ignore */
+                }
+              }
+              return { ...c, messages: msgs };
+            });
+            setConversationsList(convs);
+            const first = convs[0];
+            if (first) {
+              setConversationId(first.id ?? null);
+              setMessages(toUIMessages(first.messages));
+            }
+          } catch (e) {
+            console.warn('Failed to normalize conversations from auth response', e);
+          }
+        }
+        // if no conversations in response, try to fetch list
+        if ((!json.conversations || json.conversations.length === 0) && json.user) {
+          try {
+            const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(json.user.id)}`);
+            const j = await resp.json();
+            if (j?.success) setConversationsList(j.conversations || []);
+          } catch (e) { /* ignore */ }
+        }
+      } else {
+        alert(json?.message || 'Auth failed');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Request failed');
+    }
+  };
+
+  const handleLogout = () => {
+    setAuthUser(null);
+    localStorage.removeItem('authUser');
+    localStorage.removeItem('activeConversationId');
+    setConversationsList([]);
+    setConversationId(null);
+    setMessages([]);
+    setDocument({ title: '', content: '', isStreaming: false });
+    setInput('');
+    setLastSavedAssistantId(null);
+  };
+
+  const handleRenameConversation = async (conv: any) => {
+    let newTitle = prompt('Введите новое название чата', conv.title || 'Чат');
+    if (newTitle === null) return;
+    newTitle = newTitle.trim();
+    if (!newTitle) return;
+
+    if (String(conv.id).startsWith('local-')) {
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: newTitle } : c));
+      return;
+    }
+
+    try {
+      const resp = await fetch('/api/conversations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: conv.id, title: newTitle }),
+      });
+      const j = await resp.json();
+      if (!j?.success) {
+        throw new Error(j?.message || 'rename failed');
+      }
+      const updated = j.conversation;
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: updated?.title ?? newTitle } : c));
+    } catch (e) {
+      console.error('Failed to rename conversation', e);
+      // revert on failure
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: conv.title } : c));
+      return;
+    }
+  };
+
 const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTMLFormElement>) => {
   e.preventDefault();
+
+  if (status !== 'ready') {
+    return;
+  }
 
   const hasText = Boolean(message.text);
   const hasAttachments = Boolean(message.files?.length);
@@ -216,10 +442,49 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
     }
   }
 
+  // If user is signed in but there's no conversationId yet,
+  // create a conversation first so the server doesn't create one
+  // that the client can't reference later.
+  if (authUser && (!conversationId || String(conversationId).startsWith('local-'))) {
+    try {
+      // Prepare the initial user message payload so it's persisted with the conversation
+      const userMsg = {
+        id: `m-${Date.now()}`,
+        role: 'user',
+        content: `${hiddenPart}${(message.text || '').trim()}`,
+        parts: [{ type: 'text', text: `${hiddenPart}${(message.text || '').trim()}` }],
+        metadata: {},
+      };
+
+      const resp = await fetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: authUser.id, title: `Conversation ${new Date().toLocaleString()}`, messages: [userMsg] }),
+      });
+      const j = await resp.json();
+      if (j?.success && j.conversation) {
+        // Replace any local placeholder with the created conversation record
+        setConversationsList(prev => {
+          const withoutLocal = prev.filter(p => !String(p.id).startsWith('local-'));
+          return [j.conversation, ...withoutLocal];
+        });
+        setConversationId(j.conversation.id);
+        setMessages([]);
+        localStorage.setItem('activeConversationId', j.conversation.id);
+        // wait a short moment for React to re-render and update the transport
+        await new Promise((r) => setTimeout(r, 60));
+      }
+    } catch (e) {
+      console.error('Failed to create conversation before sending message', e);
+    }
+  }
+
   sendMessage({
     text: `${hiddenPart}${(message.text || "").trim()}`,
     files: preparedFiles, // только FileUIPart[]
   });
+
+  // messages will be saved on the server side using conversationId from useChat body
 
   setInput("");
 };
@@ -241,11 +506,106 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
   return (
     <div className="h-screen flex flex-col bg-background">
 
+      {/* Auth header */}
+      <div className="p-3 border-b bg-muted/5">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
+          <div className="text-sm text-muted-foreground">Регламентер</div>
+          <div>
+            {authUser ? (
+              <div className="flex items-center gap-3">
+                <div className="text-sm">Signed in as <strong>{authUser.username}</strong></div>
+                <button onClick={handleLogout} className="text-sm px-2 py-1 border rounded">Logout</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <input
+                  className="border px-2 py-1 rounded text-sm"
+                  placeholder="Username"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                />
+                <input
+                  className="border px-2 py-1 rounded text-sm"
+                  type="password"
+                  placeholder="Password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                />
+                <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-sm px-2 py-1 border rounded">
+                  {authMode === 'login' ? 'Register' : 'Login'}
+                </button>
+                <button onClick={handleAuth} className="text-sm px-3 py-1 bg-primary text-black rounded">
+                  {authMode === 'login' ? 'Login' : 'Create'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      {/* Multi-chat disabled: single conversation mode only */}
+
       {/* Основная область */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Левая часть — чат */}
-        <div className="w-[700px] flex flex-col border-r shrink-0">
-          <Conversation>
+        {/* Сайдбар со списком чатов */}
+        <div className="w-42 border-r flex flex-col shrink-0 bg-muted/10">
+          <div className="p-2 flex items-center justify-between border-b">
+            <span className="text-xs font-medium">Ваши чаты</span>
+            <button
+              onClick={async () => {
+                if (!authUser?.id) return;
+                // Create a local placeholder conversation - persist only when first message is sent
+                const localId = `local-${Date.now()}`;
+                const localConv = {
+                  id: localId,
+                  title: `Новый чат ${new Date().toLocaleTimeString()}`,
+                  created: new Date().toISOString(),
+                  messages: [],
+                  local: true,
+                } as any;
+                setConversationsList(prev => [localConv, ...prev]);
+                setConversationId(localId);
+                setMessages([]);
+                localStorage.setItem('activeConversationId', localId);
+              }}
+              className="text-xs px-2 py-1 border rounded"
+            >Новый</button>
+          </div>
+          <div className="flex-1 overflow-auto">
+            <ul className="text-sm">
+              {conversationsList.map(c => (
+                <li
+                  key={c.id}
+                  className={`px-2 py-1 cursor-pointer border-b hover:bg-muted/30 ${c.id === conversationId ? 'bg-muted/50 font-medium' : ''}`}
+                  onClick={() => {
+                    setConversationId(c.id);
+                    setMessages(toUIMessages(c.messages));
+                    localStorage.setItem('activeConversationId', c.id);
+                  }}
+                >
+                  <div className="flex items-center gap-1 truncate" title={c.title || 'Чат'}>
+                    <span className="flex-1 truncate">{c.title || 'Чат'}</span>
+                    <button
+                      className="shrink-0 p-0.5 rounded hover:bg-muted"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRenameConversation(c);
+                      }}
+                    >
+                      <Pencil className="w-3 h-3 opacity-70" />
+                    </button>
+                  </div>
+                  <div className="text-[10px] opacity-60 truncate">{c.created?.slice(0, 19)}</div>
+                </li>
+              ))}
+              {conversationsList.length === 0 && (
+                <li className="px-2 py-2 text-xs opacity-60">Нет сохранённых чатов</li>
+              )}
+            </ul>
+          </div>
+        </div>
+        {/* Центральная часть — чат */}
+        <div className="flex flex-col w-[700px] border-r shrink-0">
+          <Conversation key={chatKey}>
             <ConversationContent>
               {messages.map((message) => {
                 const textParts = message.parts.filter(
@@ -405,7 +765,7 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
 
                 <PromptInputSubmit
                   status={status === 'streaming' ? 'streaming' : 'ready'}
-                  disabled={!input.trim()}
+                  disabled={status !== 'ready' || !input.trim()}
                   className="absolute bottom-3 right-3"
                 />
               </PromptInput>
@@ -417,15 +777,13 @@ const handleSubmit = async (message: PromptInputMessage, e: React.FormEvent<HTML
 <PromptsManager
   className="mb-4"
   onPromptSelect={async (content) => {
-
     try {
+      // When selecting a prompt, only update the global system prompt.
+      // Saving prompts to a user's private collection should be an explicit action.
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [],
-          newSystemPrompt: content,
-        }),
+        body: JSON.stringify({ messages: [], newSystemPrompt: content }),
       });
       if (!res.ok) throw new Error('Failed to update system prompt');
       console.log('✅ System prompt updated');

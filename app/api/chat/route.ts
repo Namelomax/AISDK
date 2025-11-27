@@ -9,7 +9,8 @@ import {
   JsonToSseTransformStream,
 } from 'ai';
 import { z } from 'zod';
-import { getPrompt, updatePrompt } from '@/lib/getPromt';
+import { getPrompt, updatePrompt, saveConversation, createPromptForUser, updateConversation } from '@/lib/getPromt';
+
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -197,28 +198,72 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
 
 // Основной POST
 export async function POST(req: Request) {
-  const { messages, newSystemPrompt } = await req.json();
+  const body = await req.json().catch(() => ({}));
+  let { messages, newSystemPrompt, userId } = body as any;
+  // Extract conversationId early for persistence
+  let conversationId: string | null = null;
+  try {
+    const url = new URL(req.url);
+    conversationId = body.conversationId || url.searchParams.get('conversationId');
+  } catch {}
+  // Ensure messages is always an array to avoid runtime errors when callers omit it
+  if (!Array.isArray(messages)) {
+    messages = [];
+  }
 
-  const currentDocument = messages.at(-1)?.metadata?.currentDocument;
+  // Build a normalized messages array to use for model calls and intent detection.
+  // If the client didn't send a messages array, but sent `text` or `message` in the body,
+  // create a single user message so downstream code has a non-empty history.
+  const normalizedMessages: any[] = Array.isArray(messages) && messages.length > 0
+    ? messages
+    : (body && (body.text || body.message)
+      ? [{
+          id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
+          role: 'user',
+          parts: [{ type: 'text', text: String(body.text ?? body.message ?? '') }],
+          content: String(body.text ?? body.message ?? ''),
+        }]
+      : []);
+
+  // Also accept userId via query param (so client can include it in transport API)
+  try {
+    const url = new URL(req.url);
+    const qp = url.searchParams.get('userId');
+    if (!userId && qp) userId = qp;
+  } catch (e) {
+    // ignore
+  }
+
+  const currentDocument = normalizedMessages.length ? normalizedMessages.at(-1)?.metadata?.currentDocument : undefined;
   console.log(currentDocument, 'currentDocument');
-  console.log(messages.at(-1), 'message');
+  console.log(normalizedMessages.length ? normalizedMessages.at(-1) : undefined, 'message');
 
   if (newSystemPrompt) {
-    await updatePrompt(newSystemPrompt);
-    cachedPrompt = newSystemPrompt;
-    return new Response(JSON.stringify({ success: true }), { status: 200 });
+    // If userId provided, save prompt for user; otherwise update global default
+    try {
+      if (userId) {
+        const title = (newSystemPrompt || '').slice(0, 60) || 'User Prompt';
+        await createPromptForUser(userId, title, newSystemPrompt);
+      } else {
+        await updatePrompt(newSystemPrompt);
+      }
+      cachedPrompt = newSystemPrompt;
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    } catch (err) {
+      console.error('Error saving prompt for user:', err);
+      return new Response(JSON.stringify({ success: false }), { status: 500 });
+    }
   }
 
   const systemPrompt = await ensurePrompt();
 
-  const lastUserMessage = messages[messages.length - 1];
+  const lastUserMessage = normalizedMessages[normalizedMessages.length - 1];
   const lastText =
     lastUserMessage?.content ||
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
   
-  // ✅ теперь файлы уже внутри messages — ничего дополнительно не нужно
-  const extendedMessages: UIMessage[] = messages;
+  const extendedMessages: UIMessage[] = normalizedMessages as UIMessage[];
 
   // Определяем этап диалога
   function determineConversationStage(messages: any[]): ConversationStage {
@@ -241,6 +286,45 @@ export async function POST(req: Request) {
     lastUserMessage: lastText.substring(0, 150),
     conversationStage,
   });
+
+  // If userId provided, save or update conversation in background.
+  // Some clients may not send `messages` as an array; build a sensible fallback.
+  if (userId) {
+    try {
+      const convId = (body && body.conversationId) || (() => {
+        try { const u = new URL(req.url); return u.searchParams.get('conversationId'); } catch { return null; }
+      })();
+
+      const msgsToSave: any[] = Array.isArray(messages) && messages.length > 0
+        ? messages
+        : (lastUserMessage ? [lastUserMessage] : (body && (body.text || body.message) ? [{
+            id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
+            role: 'user',
+            parts: [{ type: 'text', text: String(body.text ?? body.message ?? '') }],
+            content: String(body.text ?? body.message ?? ''),
+          }] : []));
+
+      if (msgsToSave.length > 0) {
+        if (convId) {
+          try {
+            const mod = await import('@/lib/getPromt');
+            void mod.updateConversation(convId, msgsToSave);
+          } catch (e) {
+            console.error('Failed to update conversation:', e);
+          }
+        } else {
+          try {
+            const mod = await import('@/lib/getPromt');
+            void mod.saveConversation(userId, msgsToSave);
+          } catch (e) {
+            console.error('Failed to create conversation:', e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to save conversation:', err);
+    }
+  }
 
   // Определяем намерение пользователя
   const { object: intent } = await (await import('ai')).generateObject({
@@ -290,14 +374,27 @@ ${lastText}
           writer.write({
             type: 'text-delta',
             id: 'error',
-            delta:
-              'Произошла ошибка при формировании регламента. Попробуйте снова.',
+            delta: 'Произошла ошибка при формировании регламента. Попробуйте снова.',
           });
           writer.write({ type: 'text-end', id: 'error' });
         }
       },
+      onFinish: async ({ messages: finished }) => {
+        if (userId) {
+          try {
+            if (conversationId) {
+              await updateConversation(conversationId, finished);
+            } else {
+              await saveConversation(userId, finished);
+            }
+          } catch (e) {
+            console.error('generate_regulation persistence failed', e);
+          }
+        }
+      }
     });
-    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+    const readable = stream.pipeThrough(new JsonToSseTransformStream());
+    return wrapReadableWithSessionSave(readable, userId);
   }
 
   if (intent.type === 'document') {
@@ -310,13 +407,43 @@ ${lastText}
           console.error('Document agent error:', error);
         }
       },
+      onFinish: async ({ messages: finished }) => {
+        if (userId) {
+          try {
+            if (conversationId) {
+              await updateConversation(conversationId, finished);
+            } else {
+              await saveConversation(userId, finished);
+            }
+          } catch (e) {
+            console.error('document persistence failed', e);
+          }
+        }
+      }
     });
-    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+    const readable = stream.pipeThrough(new JsonToSseTransformStream());
+    return wrapReadableWithSessionSave(readable, userId);
   }
 
   if (intent.type === 'search') {
     const stream = await serpAgent(messages, systemPrompt);
-    return stream.toUIMessageStreamResponse();
+    const resp = stream.toUIMessageStreamResponse({
+      originalMessages: messages,
+      onFinish: async ({ messages: finished }) => {
+        if (userId) {
+          try {
+            if (conversationId) {
+              await updateConversation(conversationId, finished);
+            } else {
+              await saveConversation(userId, finished);
+            }
+          } catch (e) {
+            console.error('search onFinish persistence failed', e);
+          }
+        }
+      }
+    });
+    return wrapResponseWithSessionSave(resp, userId);
   }
 
   if (intent.type === 'casual') {
@@ -342,8 +469,23 @@ ${lastText}
       }),
       experimental_transform: smoothStream(),
     });
-
-    return stream.toUIMessageStreamResponse();
+    const resp = stream.toUIMessageStreamResponse({
+      originalMessages: messages,
+      onFinish: async ({ messages: finished }) => {
+        if (userId) {
+          try {
+            if (conversationId) {
+              await updateConversation(conversationId, finished);
+            } else {
+              await saveConversation(userId, finished);
+            }
+          } catch (e) {
+            console.error('casual onFinish persistence failed', e);
+          }
+        }
+      }
+    });
+    return wrapResponseWithSessionSave(resp, userId);
   }
 
   // Основной диалог
@@ -366,8 +508,72 @@ ${lastText}
     }),
     experimental_transform: smoothStream(),
   });
+  const resp = stream.toUIMessageStreamResponse({
+    originalMessages: messages,
+    onFinish: async ({ messages: finished }) => {
+      if (userId) {
+        try {
+          if (conversationId) {
+            await updateConversation(conversationId, finished);
+          } else {
+            await saveConversation(userId, finished);
+          }
+        } catch (e) {
+          console.error('main chat onFinish persistence failed', e);
+        }
+      }
+    }
+  });
+  return wrapResponseWithSessionSave(resp, userId);
+}
 
-  return stream.toUIMessageStreamResponse();
+// Helper to wrap a ReadableStream (SSE)
+function wrapReadableWithSessionSave(readable: ReadableStream, userId?: string | null) {
+  const wrapped = new ReadableStream({
+    async start(controller) {
+      const reader = readable.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+      // no-op: we no longer persist session info here
+    }
+  });
+
+  return new Response(wrapped, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+// Helper to wrap an existing Response (from stream.toUIMessageStreamResponse())
+function wrapResponseWithSessionSave(resp: Response, userId?: string | null) {
+  const body = resp.body;
+  if (!body) return resp;
+  const wrapped = new ReadableStream({
+    async start(controller) {
+      const reader = body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+      // no-op: session persistence disabled
+    }
+  });
+
+  // copy headers
+  const headers: Record<string,string> = {};
+  resp.headers.forEach((v,k) => headers[k]=v);
+  return new Response(wrapped, { status: resp.status, headers });
 }
 
 type ConversationStage = 
