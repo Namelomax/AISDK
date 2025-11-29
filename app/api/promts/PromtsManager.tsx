@@ -135,7 +135,8 @@ const handleSelect = async (id: string) => {
         <SelectTrigger className="flex-1 w-[550px]">
           <SelectValue placeholder="Выберите промпт..." />
         </SelectTrigger>
-        <SelectContent className="flex-1 w-[550px]">
+        <SelectContent className="flex-1 w-[550px]" position="popper"
+        side="top">
           {prompts.map(p => (
             <SelectItem key={p.id} value={p.id}>{p.title}</SelectItem>
           ))}
