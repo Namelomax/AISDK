@@ -438,6 +438,27 @@ export async function renameConversation(convId: string, title: string): Promise
   };
 }
 
+export async function deleteConversation(convId: string, userId?: string): Promise<void> {
+  await connectDB();
+  const cleanConvId = convId.replace(/^conversations:/, '');
+  const convRecord = new RecordId('conversations', cleanConvId);
+
+  if (userId) {
+    const convRaw = await db.select(convRecord).catch(() => undefined);
+    const convData = Array.isArray(convRaw) ? convRaw[0] : convRaw;
+    if (!convData) {
+      throw new Error('Conversation not found');
+    }
+    const ownerRef = convData.user?.toString?.() ?? String(convData.user ?? '');
+    const normalizedUser = userId.startsWith('users:') ? userId : `users:${userId}`;
+    if (ownerRef && normalizedUser && ownerRef !== normalizedUser) {
+      throw new Error('Forbidden');
+    }
+  }
+
+  await db.delete(convRecord);
+}
+
 // Create a new empty conversation for a user (returns created conversation)
 export async function createConversation(userId: string, title?: string): Promise<Conversation> {
   await connectDB();

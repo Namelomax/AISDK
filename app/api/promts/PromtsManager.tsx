@@ -35,7 +35,7 @@ const loadPrompts = async () => {
     const res = await fetch('/api/promts');
     const data = await res.json();
     
-    console.log('Received prompts:', data); // Для отладки
+    console.log('Received prompts:', data);
     
     if (Array.isArray(data)) {
       setPrompts(data);
@@ -59,7 +59,6 @@ const handleSelect = async (id: string) => {
   if (!prompt) return;
 
   try {
-    // 🔥 Отправляем новый systemPrompt сразу в API
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

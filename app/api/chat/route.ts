@@ -31,7 +31,7 @@ async function ensurePrompt() {
   return cachedPrompt;
 }
 
-// Document agent
+// Document agent (streams markdown so UI updates in real time)
 async function documentAgent(
   messages: any[],
   systemPrompt: string,
@@ -43,33 +43,31 @@ async function documentAgent(
     lastUserMessage?.content ||
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
-    
+
   const isNew = !currentDocument?.content?.trim();
 
   const prompt = isNew
-    ? `Создай новый документ в формате Markdown на основе запроса: "${userRequest}". 
-      Верни JSON с двумя полями: 
-      - "title" — краткое название документа (без кавычек)
-      - "content" — содержимое документа (используй Markdown-разметку: #, ##, -, * и т.д.).`
-    : `Ты — интеллектуальный текстовый редактор. 
-      Текущий документ называется "${currentDocument?.title}" и выглядит так:
+    ? `Создай новый документ в формате Markdown на основе запроса: "${userRequest}".
+      Требования:
+      - первая строка должна быть заголовком формата "# Название";
+      - далее выведи содержание с использованием Markdown (##, ###, списки и т.д.);
+      - не окружай результат тройными кавычками;
+      - избегай лишних вступлений.`
+    : `Ты — интеллектуальный редактор документов.
+      Текущий документ называется "${currentDocument?.title || 'Без названия'}" и выглядит так:
       ---
-      ${currentDocument?.content}
+      ${currentDocument?.content ?? ''}
       ---
       Инструкция пользователя: ${userRequest}
 
-      Твоя задача — внести только нужные правки в существующий документ:
-      - Разрешено изменять название документа (title), если пользователь просит.
-      - Можно добавлять, редактировать или удалять разделы.
-      - Если просят "добавить блок", добавь его как отдельный markdown-раздел (например, начинающийся с ##).
-      - Не повторяй уже существующий текст, не создавай копий разделов.
-      - Верни JSON с двумя полями:
-        "title" — новое название (если изменено)
-        "content" — итоговый текст в Markdown (без обёрток вроде \`\`\`markdown).`;
+      Требования к ответу:
+      - внеси только необходимые правки в текст;
+      - если нужно, измени заголовок документа;
+      - первая строка ответа — актуальный заголовок формата "# Название";
+      - далее выведи итоговый Markdown без лишних комментариев.`;
 
-  const { object } = await (await import('ai')).generateObject({
+  const stream = await streamText({
     model,
-    system: systemPrompt,
     providerOptions: {
       google: {
         baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
@@ -77,41 +75,72 @@ async function documentAgent(
         thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
       },
     },
-    schema: z.object({
-      title: z.string().describe('Название документа'),
-      content: z.string().describe('Markdown контент документа'),
-    }),
-    prompt,
+    system: systemPrompt,
+    messages: [
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    experimental_transform: smoothStream(),
   });
 
-  // Стрим заголовка (если изменён)
   dataStream.write({ type: 'data-clear', data: null });
+  const progressId = `doc-progress-${crypto.randomUUID()}`;
+  dataStream.write({ type: 'text-start', id: progressId });
   dataStream.write({
-    type: 'data-title',
-    data: object.title || currentDocument?.title || 'Без названия',
+    type: 'text-delta',
+    id: progressId,
+    delta: isNew
+      ? '✳️ Создаю новый документ, он появится в правой панели по мере генерации\n\n'
+      : '✳️ Обновляю документ, изменения появятся справа по мере генерации\n\n',
   });
 
-  // Стрим контента
-  const text = object.content.replace(/\\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-  const words = text.split(' ');
-  for (const [i, word] of words.entries()) {
-    const chunk = word + (i < words.length - 1 ? ' ' : '');
+  let accumulated = '';
+  let bodyBuffer = '';
+  let emittedTitle = false;
+  let finalTitle = currentDocument?.title || 'Документ';
+
+  for await (const part of stream.fullStream) {
+    if (part.type !== 'text-delta') continue;
+    const chunk = part.text.replace(/\r/g, '');
+
+    if (!emittedTitle) {
+      accumulated += chunk;
+      const match = accumulated.match(/#\s*(.+?)(?:\n|$)/);
+      if (match) {
+        finalTitle = match[1].trim() || finalTitle;
+        dataStream.write({ type: 'data-title', data: finalTitle });
+        emittedTitle = true;
+        const remainder = accumulated.slice(match.index! + match[0].length);
+        if (remainder) {
+          dataStream.write({ type: 'data-documentDelta', data: remainder });
+          bodyBuffer += remainder;
+        }
+        accumulated = '';
+      }
+      continue;
+    }
+
     dataStream.write({ type: 'data-documentDelta', data: chunk });
-    await new Promise((r) => setTimeout(r, 8));
+    bodyBuffer += chunk;
+  }
+
+  if (!emittedTitle) {
+    dataStream.write({ type: 'data-title', data: finalTitle });
+    if (accumulated) {
+      dataStream.write({ type: 'data-documentDelta', data: accumulated });
+      bodyBuffer += accumulated;
+    }
   }
 
   dataStream.write({ type: 'data-finish', data: null });
-
-  // UI сообщение
-  dataStream.write({ type: 'text-start', id: 'doc-finish' });
   dataStream.write({
     type: 'text-delta',
-    id: 'doc-finish',
-    delta: isNew
-      ? `Документ "${object.title}" создан и доступен в правой панели.`
-      : `Документ "${object.title}" обновлён и доступен в правой панели.`,
+    id: progressId,
+    delta: `\n\n✅ Документ "${finalTitle}" ${isNew ? 'создан' : 'обновлён'} и отображается справа.`,
   });
-  dataStream.write({ type: 'text-end', id: 'doc-finish' });
+  dataStream.write({ type: 'text-end', id: progressId });
 }
 
 

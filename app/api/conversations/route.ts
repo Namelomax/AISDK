@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createConversation, getConversations, renameConversation, saveConversation, updateConversation } from '@/lib/getPromt';
+import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation } from '@/lib/getPromt';
 
 export async function GET(req: Request) {
   try {
@@ -59,6 +59,32 @@ export async function PUT(req: Request) {
     return new Response(JSON.stringify({ success: true, conversation: updated }), { status: 200 });
   } catch (err: any) {
     console.error('Conversations PUT error', err);
+    return new Response(JSON.stringify({ success: false, message: err?.message || 'error' }), { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const { conversationId, userId } = body as any;
+    if (!conversationId) {
+      return new Response(
+        JSON.stringify({ success: false, message: 'conversationId required' }),
+        { status: 400 },
+      );
+    }
+
+    try {
+      await deleteConversation(conversationId, userId);
+    } catch (err: any) {
+      const message = err?.message || 'error';
+      const status = message === 'Forbidden' ? 403 : message === 'Conversation not found' ? 404 : 500;
+      return new Response(JSON.stringify({ success: false, message }), { status });
+    }
+
+    return new Response(JSON.stringify({ success: true }), { status: 200 });
+  } catch (err: any) {
+    console.error('Conversations DELETE error', err);
     return new Response(JSON.stringify({ success: false, message: err?.message || 'error' }), { status: 500 });
   }
 }
