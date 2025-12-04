@@ -326,7 +326,7 @@ export default function ChatPage() {
       console.error(err);
     }
   };
-
+//asd
   const handleNewLocalConversation = () => {
     if (!authUser?.id) return;
     const localId = `local-${Date.now()}`;
@@ -385,7 +385,6 @@ export default function ChatPage() {
             onRegenerate={regenerate}
             onCopy={handleCopy}
           />
-
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t p-4">
             <div className="max-w-3xl mx-auto space-y-3">

@@ -50,6 +50,31 @@ type MessageRendererProps = {
   onCopy: (text: string, id: string) => void;
 };
 
+const sanitizeUserText = (text: string) => {
+  const hiddenPattern = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
+  const hadHidden = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/i.test(text);
+  const visible = text.replace(hiddenPattern, '').trim();
+  return { visible, hadHidden };
+};
+
+const renderTextResponse = (rawText: string, key: string) => {
+  const { visible, hadHidden } = sanitizeUserText(rawText);
+
+  if (visible) {
+    return <Response key={key}>{visible}</Response>;
+  }
+
+  if (hadHidden) {
+    return (
+      <Response key={key} className="text-muted-foreground text-sm italic">
+        Текст, извлечённый из вложения, скрыт и отправлен модели.
+      </Response>
+    );
+  }
+
+  return <Response key={key}>{rawText}</Response>;
+};
+
 export const MessageRenderer = ({
   message,
   isLastMessage,
@@ -87,13 +112,13 @@ export const MessageRenderer = ({
             const parsed = JSON.parse(part.text);
 
             if (parsed.text && !parsed.document && !parsed.results) {
-              return <Response key={`${message.id}-text-${index}`}>{parsed.text}</Response>;
+              return renderTextResponse(parsed.text, `${message.id}-text-${index}`);
             }
 
             if (parsed.results) {
               return (
                 <div key={`${message.id}-search-${index}`} className="space-y-2">
-                  <Response>{parsed.text || 'Результаты поиска:'}</Response>
+                  {renderTextResponse(parsed.text || 'Результаты поиска:', `${message.id}-search-heading-${index}`)}
                   <div className="mt-2 space-y-2 text-sm">
                     {parsed.results.map((result: any, resultIndex: number) => (
                       <div key={resultIndex} className="p-3 bg-muted/50 rounded-lg">
@@ -113,17 +138,9 @@ export const MessageRenderer = ({
               );
             }
 
-            return (
-              <Response key={`${message.id}-text-${index}`}>
-                {part.text}
-              </Response>
-            );
+            return renderTextResponse(part.text, `${message.id}-text-${index}`);
           } catch {
-            return (
-              <Response key={`${message.id}-text-${index}`}>
-                {part.text}
-              </Response>
-            );
+            return renderTextResponse(part.text, `${message.id}-text-${index}`);
           }
         })}
 
@@ -140,9 +157,11 @@ export const MessageRenderer = ({
                   .map((part: any) => {
                     try {
                       const parsed = JSON.parse(part.text);
-                      return parsed.text || part.text;
+                      const candidate = parsed.text || part.text;
+                      return sanitizeUserText(candidate).visible || candidate;
                     } catch {
-                      return part.text;
+                      const { visible } = sanitizeUserText(part.text);
+                      return visible || part.text;
                     }
                   })
                   .join('\n');

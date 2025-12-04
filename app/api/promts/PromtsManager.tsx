@@ -75,7 +75,6 @@ const handleSelect = async (id: string) => {
   }
 };
 
-
   const openNew = () => {
     setEditingPrompt(null);
     setTitle('');

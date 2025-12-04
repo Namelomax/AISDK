@@ -18,10 +18,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { ChatStatus, FileUIPart } from "ai";
 import {
+  FileSpreadsheetIcon,
+  FileTextIcon,
   ImageIcon,
   Loader2Icon,
   PaperclipIcon,
   PlusIcon,
+  PresentationIcon,
   SendIcon,
   SquareIcon,
   XIcon,
@@ -82,14 +85,35 @@ export function PromptInputAttachment({
   ...props
 }: PromptInputAttachmentProps) {
   const attachments = usePromptInputAttachments();
+  const extension = data.filename?.split(".").pop()?.toUpperCase();
+
+  const getIcon = () => {
+    const mime = data.mediaType || "";
+    if (mime.includes("presentation") || mime.includes("powerpoint") || extension === "PPTX" || extension === "PPT") {
+      return <PresentationIcon className="size-5" />;
+    }
+    if (mime.includes("spreadsheet") || mime.includes("excel") || extension === "XLSX" || extension === "XLS" || extension === "CSV") {
+      return <FileSpreadsheetIcon className="size-5" />;
+    }
+    if (mime.includes("word") || mime.includes("text") || extension === "DOCX" || extension === "DOC" || extension === "TXT" || extension === "PDF") {
+      return <FileTextIcon className="size-5" />;
+    }
+    return <PaperclipIcon className="size-5" />;
+  };
+
+  const isImage = data.mediaType?.startsWith("image/") && data.url;
 
   return (
     <div
-      className={cn("group relative h-14 w-14 rounded-md border", className)}
+      className={cn(
+        "group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20",
+        className
+      )}
+      title={data.filename}
       key={data.id}
       {...props}
     >
-      {data.mediaType?.startsWith("image/") && data.url ? (
+      {isImage ? (
         <img
           alt={data.filename || "attachment"}
           className="size-full rounded-md object-cover"
@@ -98,10 +122,18 @@ export function PromptInputAttachment({
           width={56}
         />
       ) : (
-        <div className="flex size-full items-center justify-center text-muted-foreground">
-          <PaperclipIcon className="size-4" />
+        <div className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
+          {getIcon()}
+          <span className="text-[10px] font-medium uppercase tracking-wide">
+            {extension || "FILE"}
+          </span>
         </div>
       )}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="truncate" title={data.filename}>
+          {data.filename || "Файл"}
+        </span>
+      </div>
       <Button
         aria-label="Remove attachment"
         className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
@@ -234,6 +266,9 @@ export const PromptInput = ({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const dragCounterRef = useRef(0);
+  const globalDragCounterRef = useRef(0);
+  const [isDragActive, setIsDragActive] = useState(false);
 
   // Find nearest form to scope drag & drop
   useEffect(() => {
@@ -349,23 +384,50 @@ export const PromptInput = ({
     if (!form) {
       return;
     }
+
+    const hasFiles = (event: DragEvent) =>
+      Boolean(event.dataTransfer?.types?.includes("Files"));
+
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounterRef.current += 1;
+      setIsDragActive(true);
+    };
+
     const onDragOver = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes("Files")) {
+      if (hasFiles(e)) {
         e.preventDefault();
       }
     };
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) {
+        setIsDragActive(false);
+      }
+    };
+
     const onDrop = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes("Files")) {
+      if (hasFiles(e)) {
         e.preventDefault();
       }
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         add(e.dataTransfer.files);
       }
+      dragCounterRef.current = 0;
+      setIsDragActive(false);
     };
+
+    form.addEventListener("dragenter", onDragEnter);
     form.addEventListener("dragover", onDragOver);
+    form.addEventListener("dragleave", onDragLeave);
     form.addEventListener("drop", onDrop);
     return () => {
+      form.removeEventListener("dragenter", onDragEnter);
       form.removeEventListener("dragover", onDragOver);
+      form.removeEventListener("dragleave", onDragLeave);
       form.removeEventListener("drop", onDrop);
     };
   }, [add]);
@@ -374,23 +436,52 @@ export const PromptInput = ({
     if (!globalDrop) {
       return;
     }
+
+    const hasFiles = (event: DragEvent) =>
+      Boolean(event.dataTransfer?.types?.includes("Files"));
+
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      globalDragCounterRef.current += 1;
+      setIsDragActive(true);
+    };
+
     const onDragOver = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes("Files")) {
+      if (hasFiles(e)) {
         e.preventDefault();
       }
     };
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      globalDragCounterRef.current = Math.max(0, globalDragCounterRef.current - 1);
+      if (globalDragCounterRef.current === 0 && dragCounterRef.current === 0) {
+        setIsDragActive(false);
+      }
+    };
+
     const onDrop = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes("Files")) {
+      if (hasFiles(e)) {
         e.preventDefault();
       }
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         add(e.dataTransfer.files);
       }
+      globalDragCounterRef.current = 0;
+      if (dragCounterRef.current === 0) {
+        setIsDragActive(false);
+      }
     };
+
+    document.addEventListener("dragenter", onDragEnter);
     document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
     document.addEventListener("drop", onDrop);
     return () => {
+      document.removeEventListener("dragenter", onDragEnter);
       document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
       document.removeEventListener("drop", onDrop);
     };
   }, [add, globalDrop]);
@@ -460,13 +551,21 @@ export const PromptInput = ({
       />
       <form
         className={cn(
-          "w-full divide-y overflow-hidden rounded-xl border bg-background shadow-sm",
+          "relative w-full divide-y overflow-hidden rounded-xl border bg-background shadow-sm",
           className
         )}
         onSubmit={handleSubmit}
         {...props}
       >
         {children}
+        {isDragActive && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl border-2 border-dashed border-primary/70 bg-background/90">
+            <div className="flex items-center gap-2 text-primary">
+              <PlusIcon className="size-5" />
+              <span className="text-sm font-medium">Отпустите, чтобы прикрепить файл</span>
+            </div>
+          </div>
+        )}
       </form>
     </AttachmentsContext.Provider>
   );

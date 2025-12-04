@@ -31,118 +31,6 @@ async function ensurePrompt() {
   return cachedPrompt;
 }
 
-// Document agent (streams markdown so UI updates in real time)
-async function documentAgent(
-  messages: any[],
-  systemPrompt: string,
-  dataStream: any,
-  currentDocument?: { title: string; content: string }
-) {
-  const lastUserMessage = messages[messages.length - 1];
-  const userRequest =
-    lastUserMessage?.content ||
-    lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
-    '';
-
-  const isNew = !currentDocument?.content?.trim();
-
-  const prompt = isNew
-    ? `Создай новый документ в формате Markdown на основе запроса: "${userRequest}".
-      Требования:
-      - первая строка должна быть заголовком формата "# Название";
-      - далее выведи содержание с использованием Markdown (##, ###, списки и т.д.);
-      - не окружай результат тройными кавычками;
-      - избегай лишних вступлений.`
-    : `Ты — интеллектуальный редактор документов.
-      Текущий документ называется "${currentDocument?.title || 'Без названия'}" и выглядит так:
-      ---
-      ${currentDocument?.content ?? ''}
-      ---
-      Инструкция пользователя: ${userRequest}
-
-      Требования к ответу:
-      - внеси только необходимые правки в текст;
-      - если нужно, измени заголовок документа;
-      - первая строка ответа — актуальный заголовок формата "# Название";
-      - далее выведи итоговый Markdown без лишних комментариев.`;
-
-  const stream = await streamText({
-    model,
-    providerOptions: {
-      google: {
-        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-        stream: true,
-        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
-      },
-    },
-    system: systemPrompt,
-    messages: [
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-    experimental_transform: smoothStream(),
-  });
-
-  dataStream.write({ type: 'data-clear', data: null });
-  const progressId = `doc-progress-${crypto.randomUUID()}`;
-  dataStream.write({ type: 'text-start', id: progressId });
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: isNew
-      ? '✳️ Создаю новый документ, он появится в правой панели по мере генерации\n\n'
-      : '✳️ Обновляю документ, изменения появятся справа по мере генерации\n\n',
-  });
-
-  let accumulated = '';
-  let bodyBuffer = '';
-  let emittedTitle = false;
-  let finalTitle = currentDocument?.title || 'Документ';
-
-  for await (const part of stream.fullStream) {
-    if (part.type !== 'text-delta') continue;
-    const chunk = part.text.replace(/\r/g, '');
-
-    if (!emittedTitle) {
-      accumulated += chunk;
-      const match = accumulated.match(/#\s*(.+?)(?:\n|$)/);
-      if (match) {
-        finalTitle = match[1].trim() || finalTitle;
-        dataStream.write({ type: 'data-title', data: finalTitle });
-        emittedTitle = true;
-        const remainder = accumulated.slice(match.index! + match[0].length);
-        if (remainder) {
-          dataStream.write({ type: 'data-documentDelta', data: remainder });
-          bodyBuffer += remainder;
-        }
-        accumulated = '';
-      }
-      continue;
-    }
-
-    dataStream.write({ type: 'data-documentDelta', data: chunk });
-    bodyBuffer += chunk;
-  }
-
-  if (!emittedTitle) {
-    dataStream.write({ type: 'data-title', data: finalTitle });
-    if (accumulated) {
-      dataStream.write({ type: 'data-documentDelta', data: accumulated });
-      bodyBuffer += accumulated;
-    }
-  }
-
-  dataStream.write({ type: 'data-finish', data: null });
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: `\n\n✅ Документ "${finalTitle}" ${isNew ? 'создан' : 'обновлён'} и отображается справа.`,
-  });
-  dataStream.write({ type: 'text-end', id: progressId });
-}
-
 
 // Serp агент
 async function serpAgent(messages: UIMessage[], systemPrompt: string) {
@@ -427,14 +315,54 @@ ${lastText}
   }
 
   if (intent.type === 'document') {
+    if (conversationStage === 'completion_ready') {
+      const stream = createUIMessageStream({
+        originalMessages: messages,
+        execute: async ({ writer }) => {
+          try {
+            await generateFinalRegulation(messages, systemPrompt, writer);
+          } catch (error) {
+            console.error('Document intent -> regulation error:', error);
+            writer.write({ type: 'text-start', id: 'doc-error' });
+            writer.write({
+              type: 'text-delta',
+              id: 'doc-error',
+              delta: 'Не удалось сформировать регламент. Попробуйте ещё раз чуть позже.',
+            });
+            writer.write({ type: 'text-end', id: 'doc-error' });
+          }
+        },
+        onFinish: async ({ messages: finished }) => {
+          if (userId) {
+            try {
+              if (conversationId) {
+                await updateConversation(conversationId, finished);
+              } else {
+                await saveConversation(userId, finished);
+              }
+            } catch (e) {
+              console.error('document->regulation persistence failed', e);
+            }
+          }
+        }
+      });
+      const readable = stream.pipeThrough(new JsonToSseTransformStream());
+      return wrapReadableWithSessionSave(readable, userId);
+    }
+
     const stream = createUIMessageStream({
       originalMessages: messages,
       execute: async ({ writer }) => {
-        try {
-          await documentAgent(messages, systemPrompt, writer, currentDocument);
-        } catch (error) {
-          console.error('Document agent error:', error);
-        }
+        writer.write({ type: 'data-clear', data: null });
+        writer.write({ type: 'data-title', data: '' });
+        writer.write({ type: 'data-finish', data: null });
+
+        const holdId = `doc-hold-${crypto.randomUUID()}`;
+        const guidance = getDocumentStageGuidance(conversationStage as ConversationStage);
+
+        writer.write({ type: 'text-start', id: holdId });
+        writer.write({ type: 'text-delta', id: holdId, delta: `ℹ️ ${guidance.heading}\n\n${guidance.actions}` });
+        writer.write({ type: 'text-end', id: holdId });
       },
       onFinish: async ({ messages: finished }) => {
         if (userId) {
@@ -680,60 +608,84 @@ function getStageSpecificPrompt(stage: string): string {
   return prompts[stage as ConversationStage] || '';
 }
 
-// Функция для формирования финального регламента
+function getDocumentStageGuidance(stage: ConversationStage): { heading: string; actions: string } {
+  const map: Record<ConversationStage, { heading: string; actions: string }> = {
+    start: {
+      heading: 'Начнём с базовых сведений, чтобы собрать раздел «Общие положения».',
+      actions:
+        '- Коротко опишите компанию и сферу деятельности.\n- Как называется процесс, для которого нужен регламент?\n- Зачем он нужен и для кого (отдел, роль)?',
+    },
+    general_info: {
+      heading: 'Соберём детали для раздела 1: назначения, документы, термины.',
+      actions:
+        '- Уточните цель процесса и область применения регламента.\n- Перечислите связанные документы/инструкции.\n- Дайте определения ключевых терминов или ролей.',
+    },
+    process_overview: {
+      heading: 'Теперь нужен общий контур процесса (раздел 2).',
+      actions:
+        '- Кто владелец процесса и какие участники задействованы?\n- Какой продукт должен получиться на выходе и кто его потребитель?\n- Где начинается и заканчивается процесс?',
+    },
+    step_details: {
+      heading: 'Пора расписать последовательность шагов (раздел 3).',
+      actions:
+        '- Перечислите шаги по порядку.\n- Для каждого шага назовите исполнителя, вход, выход и инструменты.\n- Укажите требования или ограничения, если они есть.',
+    },
+    scenario_analysis: {
+      heading: 'Нужно описать альтернативные сценарии и исключения.',
+      actions:
+        '- Есть ли параллельные ветки, нестандартные ситуации или эскалации?\n- Кто принимает решения при отклонениях?\n- Какие условия запускают альтернативные шаги?',
+    },
+    completion_ready: {
+      heading: 'Все данные почти собраны. Скажите «Сформируй регламент», чтобы выполнить финальный проход.',
+      actions:
+        '- Могу уже выпускать финальный документ, если подтвердите.\n- При необходимости уточните ещё KPI, мониторинг или ответственность.',
+    },
+  };
+
+  return map[stage] ?? {
+    heading: 'Нужно ещё немного информации, прежде чем формировать документ.',
+    actions: '- Добавьте любую недостающую деталь процесса или отправьте файлы с пояснениями.',
+  };
+}
+
+// Функция для формирования финального регламента (стримится в реальном времени)
 async function generateFinalRegulation(
   messages: any[], 
   systemPrompt: string,
   dataStream: any
 ) {
-  // Собираем всю информацию из истории диалога
   const conversationContext = messages
-    .map(msg => {
+    .map((msg) => {
       const text = msg.content || msg.parts?.find((p: any) => p.type === 'text')?.text || '';
       return `${msg.role}: ${text}`;
     })
     .join('\n');
 
-  const { object: regulation } = await (await import('ai')).generateObject({
+  const directive = `На основе всей истории диалога ниже сформируй итоговый регламент. Используй ТОЛЬКО подтверждённые факты из переписки.
+
+Структура обязательна и должна быть ровно такой (Markdown):
+
+# Название регламента
+
+**1. Общие положения**
+    1.1. ... (и так далее)
+
+**2. Общее описание процесса**
+    ...
+
+**3. Детальное описание шагов процесса**
+    ...
+
+**4. Управление процессом**
+    ...
+
+Если данных нет — пиши «*Информация не предоставлена в диалоге.*». Никаких пояснений вне структуры.
+
+История диалога:
+${conversationContext}`;
+
+  const stream = await streamText({
     model,
-  
-    system: systemPrompt + `
-    
-    КРИТИЧЕСКИ ВАЖНО ДЛЯ ФОРМИРОВАНИЯ РЕГЛАМЕНТА:
-    
-    1. Ты должен проанализировать ВСЮ историю диалога выше
-    2. Извлечь ВСЕ подтвержденные данные ({{validated}})
-    3. Сформировать ПОЛНЫЙ регламент СТРОГО по целевой структуре:
-    
-    **1. Общие положения**
-        1.1. Официальное название компании и область деятельности.
-        1.2. Назначение регламента и область применения
-        1.3. Используемые документы
-        1.4. Термины и определения
-        
-    **2. Общее описание процесса**
-        2.1. Наименование процесса
-        2.2. Владелец процесса
-        2.3. Цель процесса, ценный конечный продукт и потребитель продукта процесса
-        2.4. Требования к продукту
-        2.5. Границы процесса
-        2.6. Участники процесса и их функции
-        2.7. Количественные характеристики процесса
-        
-    **3. Детальное описание шагов процесса**
-        3.1. Диаграмма цепочек кооперации (описательно)
-        3.2. Детальное описание каждого шага
-        3.3. Типы сценариев выполнения
-        
-    **4. Управление процессом**
-        4.1. Показатели эффективности процесса (KPI)
-        4.2. Мониторинг и контроль
-        4.3. Ответственность за отклонения
-        4.4. Проектирование процесса и процедура внесения изменений
-    
-    4. Использовать ТОЛЬКО информацию из диалога - ничего не выдумывать
-    5. Вернуть результат в формате JSON с полями title и content
-    `,
     providerOptions: {
       google: {
         baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
@@ -741,37 +693,64 @@ async function generateFinalRegulation(
         thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
       },
     },
-    schema: z.object({
-      title: z.string().describe('Официальное название регламента'),
-      content: z.string().describe('Полный регламент в Markdown формате согласно целевой структуре'),
-    }),
-    prompt: `На основе всей истории диалога сформируй финальный регламент. Используй ТОЛЬКО информацию из диалога:\n\n${conversationContext}`
+    system: systemPrompt,
+    messages: [
+      {
+        role: 'user',
+        content: directive,
+      },
+    ],
+    experimental_transform: smoothStream(),
   });
 
-  // Стриминг в документ
   dataStream.write({ type: 'data-clear', data: null });
+  const progressId = `regulation-${crypto.randomUUID()}`;
+  dataStream.write({ type: 'text-start', id: progressId });
   dataStream.write({
-    type: 'data-title', 
-    data: regulation.title || 'Регламент процесса'
+    type: 'text-delta',
+    id: progressId,
+    delta: '📄 Формирую финальный регламент. Изменения будут появляться справа по мере генерации.\n\n',
   });
 
-  const content = regulation.content.replace(/\\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-  const words = content.split(' ');
-  
-  for (const [i, word] of words.entries()) {
-    const chunk = word + (i < words.length - 1 ? ' ' : '');
+  let accumulated = '';
+  let emittedTitle = false;
+  let finalTitle = 'Регламент процесса';
+
+  for await (const part of stream.fullStream) {
+    if (part.type !== 'text-delta') continue;
+    const chunk = part.text.replace(/\r/g, '');
+
+    if (!emittedTitle) {
+      accumulated += chunk;
+      const match = accumulated.match(/#\s*(.+?)(?:\n|$)/);
+      if (match) {
+        finalTitle = match[1].trim() || finalTitle;
+        dataStream.write({ type: 'data-title', data: finalTitle });
+        emittedTitle = true;
+        const remainder = accumulated.slice(match.index! + match[0].length);
+        if (remainder) {
+          dataStream.write({ type: 'data-documentDelta', data: remainder });
+        }
+        accumulated = '';
+      }
+      continue;
+    }
+
     dataStream.write({ type: 'data-documentDelta', data: chunk });
-    await new Promise((r) => setTimeout(r, 8));
+  }
+
+  if (!emittedTitle) {
+    dataStream.write({ type: 'data-title', data: finalTitle });
+    if (accumulated) {
+      dataStream.write({ type: 'data-documentDelta', data: accumulated });
+    }
   }
 
   dataStream.write({ type: 'data-finish', data: null });
-
-  // Сообщение пользователю
-  dataStream.write({ type: 'text-start', id: 'regulation-complete' });
   dataStream.write({
     type: 'text-delta',
-    id: 'regulation-complete',
-    delta: `✅ Регламент "${regulation.title}" успешно сформирован! Проверьте его в правой панели. Если нужно что-то исправить - просто скажите об этом.`,
+    id: progressId,
+    delta: `\n\n✅ Регламент "${finalTitle}" сформирован. При необходимости попросите меня внести изменения.`,
   });
-  dataStream.write({ type: 'text-end', id: 'regulation-complete' });
+  dataStream.write({ type: 'text-end', id: progressId });
 }

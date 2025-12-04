@@ -29,6 +29,18 @@ const AttachmentsSection = () => {
   );
 };
 
+const SubmitButton = ({ status, input }: { status: string; input: string }) => {
+  const attachments = usePromptInputAttachments();
+  const canSend = status === 'ready' && (input.trim().length > 0 || attachments.files.length > 0);
+
+  return (
+    <PromptInputSubmit
+      status={status === 'streaming' ? 'streaming' : 'ready'}
+      disabled={!canSend}
+    />
+  );
+};
+
 const ensureConversationCreated = async (
   authUser: { id: string; username: string } | null,
   conversationId: string | null,
@@ -112,21 +124,20 @@ export const PromptInputWrapper = ({
 
     if (status !== 'ready') return;
 
-    const hasText = Boolean(message.text);
-    const hasAttachments = Boolean(message.files?.length);
-    if (!(hasText || hasAttachments)) return;
-
-    let hiddenPart = '';
     const preparedFiles: FileUIPart[] = [];
+    let hiddenPart = '';
+    const trimmedText = (message.text || '').trim();
 
     if (message.files?.length) {
       for (const file of message.files as FileUIPart[]) {
         const mime = file.mediaType;
 
-        if (isTextExtractable(mime)) {
+        if (mime && isTextExtractable(mime)) {
           try {
             const extracted = await extractTextFromFileUIPart(file);
-            hiddenPart += `<AI-HIDDEN>\n${extracted}\n</AI-HIDDEN>\n`;
+            if (extracted.trim().length > 0) {
+              hiddenPart += `<AI-HIDDEN>\n${extracted}\n</AI-HIDDEN>\n`;
+            }
             continue;
           } catch (error) {
             console.error('Failed extraction:', error);
@@ -136,7 +147,10 @@ export const PromptInputWrapper = ({
       }
     }
 
-    const outgoingText = `${hiddenPart}${(message.text || '').trim()}`;
+    const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0 || hiddenPart.trim().length > 0;
+    if (!hasPayload) return;
+
+    const outgoingText = `${hiddenPart}${trimmedText}`;
 
     await ensureConversationCreated(
       authUser,
@@ -184,10 +198,7 @@ return (
             </PromptInputActionMenuContent>
           </PromptInputActionMenu>
 
-          <PromptInputSubmit
-            status={status === 'streaming' ? 'streaming' : 'ready'}
-            disabled={status !== 'ready' || !input.trim()}
-          />
+          <SubmitButton status={status} input={input} />
         </div>
       </div>
 
