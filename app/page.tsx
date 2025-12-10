@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { DocumentPanel, DocumentState } from '@/components/document/DocumentPanel';
@@ -25,6 +25,24 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
+
+  const handleSystemPromptUpdate = useCallback(async (content: string) => {
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [], newSystemPrompt: content }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to update system prompt');
+      }
+
+      console.log('✅ System prompt updated');
+    } catch (err) {
+      console.error('Failed to send prompt to /api/chat:', err);
+    }
+  }, []);
 
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
@@ -402,19 +420,8 @@ export default function ChatPage() {
               />
               <PromptsManager
                 className="w-full"
-                onPromptSelect={async (content) => {
-                  try {
-                    const res = await fetch('/api/chat', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ messages: [], newSystemPrompt: content }),
-                    });
-                    if (!res.ok) throw new Error('Failed to update system prompt');
-                    console.log('✅ System prompt updated');
-                  } catch (err) {
-                    console.error('Failed to send prompt to /api/chat:', err);
-                  }
-                }}
+                onPromptSelect={handleSystemPromptUpdate}
+                userId={authUser?.id ?? null}
               />
             </div>
           </div>

@@ -75,6 +75,44 @@ const renderTextResponse = (rawText: string, key: string) => {
   return <Response key={key}>{rawText}</Response>;
 };
 
+const getReasoningDurationSeconds = (part: any): number | undefined => {
+  const metadata = part?.metadata ?? {};
+  const directSeconds = [
+    metadata.durationSeconds,
+    metadata.duration,
+    metadata.thinkingDurationSeconds,
+    metadata.thinking_duration_seconds,
+    metadata.reasoningDurationSeconds,
+  ].find((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
+  if (typeof directSeconds === 'number') {
+    return Math.round(directSeconds);
+  }
+
+  const durationMs = [
+    metadata.durationMs,
+    metadata.thinkingDurationMs,
+    metadata.thinking_duration_ms,
+    metadata.reasoningDurationMs,
+    metadata.latencyMs,
+    metadata?.thinking?.durationMs,
+  ].find((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
+
+  if (typeof durationMs === 'number') {
+    return Math.max(1, Math.round(durationMs / 1000));
+  }
+
+  return undefined;
+};
+
+const persistReasoningDuration = (part: any, durationSeconds: number) => {
+  if (!part || !Number.isFinite(durationSeconds)) return;
+  const normalized = Math.max(1, Math.round(durationSeconds));
+  part.metadata = {
+    ...(part.metadata ?? {}),
+    durationSeconds: normalized,
+  };
+};
+
 export const MessageRenderer = ({
   message,
   isLastMessage,
@@ -101,6 +139,8 @@ export const MessageRenderer = ({
             key={index}
             className="w-full"
             isStreaming={status === 'streaming' && index === reasoningParts.length - 1 && isLastMessage}
+            duration={getReasoningDurationSeconds(part)}
+            onDurationMeasured={(seconds) => persistReasoningDuration(part, seconds)}
           >
             <ReasoningTrigger />
             <ReasoningContent>{part.text}</ReasoningContent>

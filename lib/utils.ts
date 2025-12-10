@@ -43,7 +43,7 @@ const binaryBufferToText = (buffer: ArrayBuffer): string => {
         return cleaned;
       }
     } catch (error) {
-      // continue with next encoding
+      // continue
     }
   }
   return '';

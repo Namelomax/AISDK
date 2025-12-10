@@ -23,6 +23,68 @@ const model = google('gemini-2.5-flash');
 
 let cachedPrompt: string | null = null;
 
+const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi;
+const MAX_DOC_CONTEXT_CHARS = 4000;
+
+function extractUrls(text?: string | null): string[] {
+  if (!text) return [];
+  const matches = text.match(URL_REGEX);
+  if (!matches) return [];
+  const sanitized = matches
+    .map((url) => url.replace(/[)\],.]+$/, ''))
+    .filter((url) => url.toLowerCase().startsWith('http'));
+  const unique = Array.from(new Set(sanitized));
+  return unique.slice(0, 20);
+}
+
+function createUrlContextTool(urls: string[]) {
+  if (!urls.length) return undefined;
+  return google.tools.urlContext({});
+}
+
+function withStructuredOutput<T>(
+  enable: boolean,
+  outputFactory: () => T,
+): T | undefined {
+  return enable ? outputFactory() : undefined;
+}
+
+async function fetchGoogleDocText(url: string): Promise<string | null> {
+  const match = url.match(/docs\.google\.com\/document\/d\/([\w-]+)/i);
+  if (!match) return null;
+  const docId = match[1];
+  const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+  try {
+    const resp = await fetch(exportUrl, { method: 'GET' });
+    if (!resp.ok) {
+      return null;
+    }
+    const text = await resp.text();
+    return text.trim() ? text : null;
+  } catch (error) {
+    console.warn('Failed to fetch Google Doc text:', error);
+    return null;
+  }
+}
+
+async function resolveUrlContexts(urls: string[]): Promise<Array<{ url: string; content: string }>> {
+  const resolved: Array<{ url: string; content: string }> = [];
+  await Promise.all(
+    urls.map(async (url) => {
+      if (/docs\.google\.com\/document\//i.test(url)) {
+        const text = await fetchGoogleDocText(url);
+        if (text) {
+          resolved.push({
+            url,
+            content: text.slice(0, MAX_DOC_CONTEXT_CHARS),
+          });
+        }
+      }
+    })
+  );
+  return resolved;
+}
+
 
 async function ensurePrompt() {
   console.log(cachedPrompt,"cachedPrompt")
@@ -33,7 +95,12 @@ async function ensurePrompt() {
 
 
 // Serp агент
-async function serpAgent(messages: UIMessage[], systemPrompt: string) {
+async function serpAgent(
+  messages: UIMessage[],
+  systemPrompt: string,
+  tools?: Record<string, any>,
+  urlHint?: string,
+) {
   const normalizedMessages: UIMessage[] = messages.map((m: any) => {
     const text =
       m.parts?.find((p: any) => p.type === 'text')?.text ||
@@ -68,19 +135,36 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
       snippet: r.snippet,
     })) ?? [];
 
+  const linkedUrls = extractUrls(query);
+  const resolvedLinkContexts = await resolveUrlContexts(linkedUrls);
+  const supplementalMessages: UIMessage[] = resolvedLinkContexts.map((doc) => ({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [
+      {
+        type: 'text' as const,
+        text: `Из публичного документа (${doc.url}) извлечено содержимое:
+${doc.content}`,
+      },
+    ],
+  }));
   const extendedMessages: UIMessage[] = [
-    ...normalizedMessages,
-    {
-      id: crypto.randomUUID(),
-      role: 'user',
-      parts: [
-        {
-          type: 'text' as const,
-          text: `Результаты поиска: ${JSON.stringify(results, null, 2)}\nСформулируй краткий и понятный ответ на основе этих данных.`,
-        },
-      ],
-    },
+    ...(normalizedMessages as UIMessage[]),
+    ...supplementalMessages,
   ];
+
+  const experimentalOutput = withStructuredOutput(!tools, () => Output.object({
+    schema: z.object({
+      text: z.string(),
+      results: z.array(
+        z.object({
+          title: z.string(),
+          link: z.string(),
+          snippet: z.string(),
+        })
+      ).optional(),
+    }),
+  }));
 
   return streamText({
     model,
@@ -94,21 +178,11 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
         },
       },
     },
+    tools,
     messages: convertToModelMessages(extendedMessages),
     
-    system: systemPrompt + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
-    experimental_output: Output.object({
-      schema: z.object({
-        text: z.string(),
-        results: z.array(
-          z.object({
-            title: z.string(),
-            link: z.string(),
-            snippet: z.string(),
-          })
-        ).optional(),
-      }),
-    }),
+    system: systemPrompt + (urlHint ?? '') + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
+    ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
     experimental_transform: smoothStream(),
 });
 }
@@ -117,20 +191,15 @@ async function serpAgent(messages: UIMessage[], systemPrompt: string) {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   let { messages, newSystemPrompt, userId } = body as any;
-  // Extract conversationId early for persistence
   let conversationId: string | null = null;
   try {
     const url = new URL(req.url);
     conversationId = body.conversationId || url.searchParams.get('conversationId');
   } catch {}
-  // Ensure messages is always an array to avoid runtime errors when callers omit it
   if (!Array.isArray(messages)) {
     messages = [];
   }
 
-  // Build a normalized messages array to use for model calls and intent detection.
-  // If the client didn't send a messages array, but sent `text` or `message` in the body,
-  // create a single user message so downstream code has a non-empty history.
   const normalizedMessages: any[] = Array.isArray(messages) && messages.length > 0
     ? messages
     : (body && (body.text || body.message)
@@ -142,7 +211,6 @@ export async function POST(req: Request) {
         }]
       : []);
 
-  // Also accept userId via query param (so client can include it in transport API)
   try {
     const url = new URL(req.url);
     const qp = url.searchParams.get('userId');
@@ -156,7 +224,7 @@ export async function POST(req: Request) {
   console.log(normalizedMessages.length ? normalizedMessages.at(-1) : undefined, 'message');
 
   if (newSystemPrompt) {
-    // If userId provided, save prompt for user; otherwise update global default
+    // If userId provided, save prompt for user
     try {
       if (userId) {
         const title = (newSystemPrompt || '').slice(0, 60) || 'User Prompt';
@@ -179,8 +247,28 @@ export async function POST(req: Request) {
     lastUserMessage?.content ||
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
-  
-  const extendedMessages: UIMessage[] = normalizedMessages as UIMessage[];
+  const linkedUrls = extractUrls(lastText);
+  const urlContextTool = createUrlContextTool(linkedUrls);
+  const baseTools = urlContextTool ? ({ url_context: urlContextTool } as Record<string, any>) : undefined;
+  const urlContextHint = linkedUrls.length
+    ? `\nДоступны ссылки пользователя (до 20) для анализа: ${linkedUrls.join(', ')}. Если это помогает, вызови инструмент url_context, чтобы получить содержание ссылок.\n`
+    : '';
+  const resolvedLinkContexts = await resolveUrlContexts(linkedUrls);
+  const supplementalMessages: UIMessage[] = resolvedLinkContexts.map((doc) => ({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [
+      {
+        type: 'text' as const,
+        text: `Из публичного документа (${doc.url}) извлечено содержимое:\n${doc.content}`,
+      },
+    ],
+  }));
+
+  const extendedMessages: UIMessage[] = [
+    ...(normalizedMessages as UIMessage[]),
+    ...supplementalMessages,
+  ];
 
   // Определяем этап диалога
   function determineConversationStage(messages: any[]): ConversationStage {
@@ -361,7 +449,7 @@ ${lastText}
         const guidance = getDocumentStageGuidance(conversationStage as ConversationStage);
 
         writer.write({ type: 'text-start', id: holdId });
-        writer.write({ type: 'text-delta', id: holdId, delta: `ℹ️ ${guidance.heading}\n\n${guidance.actions}` });
+        writer.write({ type: 'text-delta', id: holdId, delta: ` ${guidance.heading}\n\n${guidance.actions}` });
         writer.write({ type: 'text-end', id: holdId });
       },
       onFinish: async ({ messages: finished }) => {
@@ -383,7 +471,7 @@ ${lastText}
   }
 
   if (intent.type === 'search') {
-    const stream = await serpAgent(messages, systemPrompt);
+    const stream = await serpAgent(messages, systemPrompt, baseTools, urlContextHint);
     const resp = stream.toUIMessageStreamResponse({
       originalMessages: messages,
       onFinish: async ({ messages: finished }) => {
@@ -404,6 +492,11 @@ ${lastText}
   }
 
   if (intent.type === 'casual') {
+    const experimentalOutput = withStructuredOutput(!baseTools, () => Output.object({
+      schema: z.object({
+        text: z.string().describe('Короткий ответ пользователю.'),
+      }),
+    }));
     const stream = streamText({
       model,
       providerOptions: {
@@ -413,17 +506,15 @@ ${lastText}
           thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
         },
       },
-      messages: convertToModelMessages(messages),
+      tools: baseTools,
+      messages: convertToModelMessages(extendedMessages),
       system:
         systemPrompt +
+          urlContextHint +
         `
 Ты — дружелюбный ассистент. Отвечай просто и понятно. Если есть дополнительная информация, используй её.
 `,
-      experimental_output: Output.object({
-        schema: z.object({
-          text: z.string().describe('Короткий ответ пользователю.'),
-        }),
-      }),
+      ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
       experimental_transform: smoothStream(),
     });
     const resp = stream.toUIMessageStreamResponse({
@@ -447,6 +538,11 @@ ${lastText}
 
   // Основной диалог
   const stageSpecificPrompt = getStageSpecificPrompt(conversationStage);
+  const experimentalOutput = withStructuredOutput(!baseTools, () => Output.object({
+    schema: z.object({
+      text: z.string().describe('Ответ пользователю для продолжения диалога'),
+    }),
+  }));
   const stream = streamText({
     model,
     providerOptions: {
@@ -456,13 +552,10 @@ ${lastText}
         thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
       },
     },
+    tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
-    system: systemPrompt + stageSpecificPrompt,
-    experimental_output: Output.object({
-      schema: z.object({
-        text: z.string().describe('Ответ пользователю для продолжения диалога'),
-      }),
-    }),
+    system: systemPrompt + stageSpecificPrompt + urlContextHint,
+    ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
     experimental_transform: smoothStream(),
   });
   const resp = stream.toUIMessageStreamResponse({
@@ -648,7 +741,7 @@ function getDocumentStageGuidance(stage: ConversationStage): { heading: string; 
   };
 }
 
-// Функция для формирования финального регламента (стримится в реальном времени)
+// Функция для формирования финального регламента
 async function generateFinalRegulation(
   messages: any[], 
   systemPrompt: string,
@@ -663,23 +756,32 @@ async function generateFinalRegulation(
 
   const directive = `На основе всей истории диалога ниже сформируй итоговый регламент. Используй ТОЛЬКО подтверждённые факты из переписки.
 
-Структура обязательна и должна быть ровно такой (Markdown):
+  Структура обязательна и должна быть ровно такой (Markdown). После каждого заголовка раздела оставляй пустую строку, а подпункты не начинай с табов или четырёх пробелов:
 
 # Название регламента
 
-**1. Общие положения**
-    1.1. ... (и так далее)
+  **1. Общие положения**
+
+  1.1. ... (и так далее)
 
 **2. Общее описание процесса**
-    ...
+
+  2.1. ...
 
 **3. Детальное описание шагов процесса**
-    ...
+
+  3.1. ...
 
 **4. Управление процессом**
-    ...
 
-Если данных нет — пиши «*Информация не предоставлена в диалоге.*». Никаких пояснений вне структуры.
+  4.1. ...
+
+  Правила форматирования:
+  - Всегда добавляй пустую строку между строкой вида «**N. …**» и пунктами «N.1, N.2 …».
+  - Не используй отступы из четырёх пробелов перед нумерованными пунктами.
+  - Если данных нет — пиши «*Информация не предоставлена в диалоге.*».
+
+  Никаких пояснений вне структуры.
 
 История диалога:
 ${conversationContext}`;
@@ -700,10 +802,11 @@ ${conversationContext}`;
         content: directive,
       },
     ],
-    experimental_transform: smoothStream(),
   });
 
   dataStream.write({ type: 'data-clear', data: null });
+  const placeholderTitle = 'Генерация документа…';
+  dataStream.write({ type: 'data-title', data: placeholderTitle });
   const progressId = `regulation-${crypto.randomUUID()}`;
   dataStream.write({ type: 'text-start', id: progressId });
   dataStream.write({
@@ -712,38 +815,51 @@ ${conversationContext}`;
     delta: '📄 Формирую финальный регламент. Изменения будут появляться справа по мере генерации.\n\n',
   });
 
-  let accumulated = '';
-  let emittedTitle = false;
-  let finalTitle = 'Регламент процесса';
+  let bufferedForTitle = '';
+  let publishedFinalTitle = false;
+  let titleRemovedFromStream = false;
+  let finalTitle = placeholderTitle;
+  let hasEmittedContent = false;
+  let fullContent = '';
 
   for await (const part of stream.fullStream) {
     if (part.type !== 'text-delta') continue;
-    const chunk = part.text.replace(/\r/g, '');
+    let chunk = String(part.text ?? '').replace(/\r/g, '');
+    if (!chunk) continue;
 
-    if (!emittedTitle) {
-      accumulated += chunk;
-      const match = accumulated.match(/#\s*(.+?)(?:\n|$)/);
+    if (!publishedFinalTitle) {
+      bufferedForTitle += chunk;
+      const match = bufferedForTitle.match(/#\s*(.+?)(?:\n|$)/);
       if (match) {
         finalTitle = match[1].trim() || finalTitle;
         dataStream.write({ type: 'data-title', data: finalTitle });
-        emittedTitle = true;
-        const remainder = accumulated.slice(match.index! + match[0].length);
-        if (remainder) {
-          dataStream.write({ type: 'data-documentDelta', data: remainder });
-        }
-        accumulated = '';
+        publishedFinalTitle = true;
+        bufferedForTitle = '';
+      } else if (bufferedForTitle.length > 4000) {
+        bufferedForTitle = bufferedForTitle.slice(-4000);
       }
-      continue;
     }
 
+    if (!titleRemovedFromStream) {
+      const trimmedOnce = chunk.replace(/^#\s.*(?:\n|$)/, '');
+      if (trimmedOnce !== chunk) {
+        chunk = trimmedOnce;
+        titleRemovedFromStream = true;
+      }
+    }
+
+    fullContent += chunk;
     dataStream.write({ type: 'data-documentDelta', data: chunk });
+    hasEmittedContent = true;
   }
 
-  if (!emittedTitle) {
+  if (!publishedFinalTitle) {
     dataStream.write({ type: 'data-title', data: finalTitle });
-    if (accumulated) {
-      dataStream.write({ type: 'data-documentDelta', data: accumulated });
-    }
+  }
+
+  if (!hasEmittedContent) {
+    const fallback = fullContent.trim() || '*Информация не предоставлена в диалоге.*';
+    dataStream.write({ type: 'data-documentDelta', data: fallback });
   }
 
   dataStream.write({ type: 'data-finish', data: null });

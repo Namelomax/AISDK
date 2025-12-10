@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react';
@@ -10,14 +10,17 @@ type Prompt = {
   title: string;
   content: string;
   isDefault: boolean;
+  ownerId?: string | null;
 };
 
 export function PromptsManager({ 
   className, 
-  onPromptSelect 
+  onPromptSelect,
+  userId,
 }: { 
   className?: string;
-  onPromptSelect: (content: string) => void;
+  onPromptSelect: (content: string) => void | Promise<void>;
+  userId?: string | null;
 }) {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -25,57 +28,128 @@ export function PromptsManager({
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const persistSelection = useCallback(async (id: string) => {
+    if (!id) return;
+
+    if (userId) {
+      try {
+        const res = await fetch('/api/promts', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, promptId: id }),
+        });
+        if (!res.ok) {
+          console.error('Failed to persist prompt selection');
+        }
+      } catch (error) {
+        console.error('Failed to persist prompt selection:', error);
+      }
+      return;
+    }
+
+    try {
+      localStorage.setItem('selectedPromptId', id);
+    } catch (error) {
+      console.error('Failed to store prompt selection locally:', error);
+    }
+  }, [userId]);
+
+  const loadPrompts = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+      const res = await fetch(`/api/promts${query}`);
+      if (!res.ok) {
+        throw new Error('Failed to fetch prompts');
+      }
+      const data = await res.json();
+
+      const list: Prompt[] = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.prompts)
+          ? data.prompts
+          : [];
+      setPrompts(list);
+
+      let serverSelection: string | null = userId ? data?.selectedPromptId ?? null : null;
+      let localSelection: string | null = null;
+      if (!userId) {
+        try {
+          localSelection = localStorage.getItem('selectedPromptId');
+        } catch {
+          localSelection = null;
+        }
+      }
+
+      const hasPrompt = (id: string | null) => Boolean(id && list.some(p => p.id === id));
+
+      if (serverSelection && !hasPrompt(serverSelection)) {
+        serverSelection = null;
+      }
+
+      if (localSelection && !hasPrompt(localSelection)) {
+        localSelection = null;
+      }
+
+      let nextSelected = serverSelection ?? localSelection ?? '';
+      if (!nextSelected && list.length > 0) {
+        nextSelected = list[0].id;
+      }
+
+      if (nextSelected) {
+        setSelectedId(nextSelected);
+        const prompt = list.find(p => p.id === nextSelected);
+        if (prompt) {
+          try {
+            await onPromptSelect(prompt.content);
+          } catch (error) {
+            console.error('Failed to apply prompt content:', error);
+          }
+        }
+
+        const shouldPersistServer = Boolean(userId && !serverSelection);
+        const shouldPersistLocal = Boolean(!userId && !localSelection);
+        if ((shouldPersistServer || shouldPersistLocal) && nextSelected) {
+          await persistSelection(nextSelected);
+        }
+      } else {
+        setSelectedId('');
+      }
+    } catch (error) {
+      console.error('Failed to load prompts:', error);
+      setPrompts([]);
+      setSelectedId('');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [userId, onPromptSelect, persistSelection]);
 
   useEffect(() => {
     loadPrompts();
-  }, []);
+  }, [loadPrompts]);
 
-const loadPrompts = async () => {
-  try {
-    const res = await fetch('/api/promts');
-    const data = await res.json();
-    
-    console.log('Received prompts:', data);
-    
-    if (Array.isArray(data)) {
-      setPrompts(data);
-      if (data.length > 0) {
-        setSelectedId(data[0].id);
-        onPromptSelect(data[0].content);
-      }
-    } else {
-      console.error('Expected array but got:', typeof data);
-      setPrompts([]);
+  const handleSelect = useCallback(async (id: string) => {
+    setSelectedId(id);
+    const prompt = prompts.find(p => p.id === id);
+    if (!prompt) return;
+
+    try {
+      await onPromptSelect(prompt.content);
+    } catch (error) {
+      console.error('Failed to apply prompt content:', error);
     }
-  } catch (error) {
-    console.error('Failed to load prompts:', error);
-    setPrompts([]);
-  }
-};
 
-const handleSelect = async (id: string) => {
-  setSelectedId(id);
-  const prompt = prompts.find(p => p.id === id);
-  if (!prompt) return;
-
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [],
-        newSystemPrompt: prompt.content,
-      }),
-    });
-
-    if (!res.ok) throw new Error('Failed to update system prompt');
-    console.log(`✅ System prompt updated to: ${prompt.title}`);
-  } catch (err) {
-    console.error('Failed to send prompt to /api/chat:', err);
-  }
-};
+    try {
+      await persistSelection(id);
+    } catch {
+      /* handled inside persistSelection */
+    }
+  }, [prompts, persistSelection, onPromptSelect]);
 
   const openNew = () => {
+    if (!userId) return;
     setEditingPrompt(null);
     setTitle('');
     setContent('');
@@ -83,8 +157,10 @@ const handleSelect = async (id: string) => {
   };
 
   const openEdit = () => {
+    if (!userId) return;
     const prompt = prompts.find(p => p.id === selectedId);
     if (!prompt || prompt.isDefault) return;
+    if (prompt.ownerId && prompt.ownerId !== userId) return;
     setEditingPrompt(prompt);
     setTitle(prompt.title);
     setContent(prompt.content);
@@ -92,45 +168,67 @@ const handleSelect = async (id: string) => {
   };
 
   const save = async () => {
+    if (!userId) {
+      alert('Необходимо войти, чтобы сохранять промпты');
+      return;
+    }
+
     if (!title.trim() || !content.trim()) return;
 
     if (editingPrompt) {
       await fetch('/api/promts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: editingPrompt.id, title, content }),
+        body: JSON.stringify({ id: editingPrompt.id, title, content, userId }),
       });
     } else {
       await fetch('/api/promts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, content }),
+        body: JSON.stringify({ title, content, userId }),
       });
     }
 
     setDialogOpen(false);
-    loadPrompts();
+    await loadPrompts();
   };
 
   const deletePrompt = async () => {
+    if (!userId) {
+      alert('Необходимо войти, чтобы удалять промпты');
+      return;
+    }
+
     const prompt = prompts.find(p => p.id === selectedId);
     if (!prompt || prompt.isDefault) return;
+    if (prompt.ownerId && prompt.ownerId !== userId) return;
     
     if (confirm(`Удалить промпт "${prompt.title}"?`)) {
       await fetch('/api/promts', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selectedId }),
+        body: JSON.stringify({ id: selectedId, userId }),
       });
-      loadPrompts();
+      await loadPrompts();
     }
   };
 
   const selectedPrompt = prompts.find(p => p.id === selectedId);
+  const canManage = Boolean(userId);
+  const canModifySelected = Boolean(
+    canManage &&
+    selectedPrompt &&
+    !selectedPrompt.isDefault &&
+    (!selectedPrompt.ownerId || selectedPrompt.ownerId === userId)
+  );
 
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <Select value={selectedId} onValueChange={handleSelect}>
+      <Select
+        value={selectedId}
+        onValueChange={handleSelect}
+        disabled={isLoading || prompts.length === 0}
+      >
         <SelectTrigger className="flex-1 w-[550px]">
           <SelectValue placeholder="Выберите промпт..." />
         </SelectTrigger>
@@ -142,7 +240,12 @@ const handleSelect = async (id: string) => {
         </SelectContent>
       </Select>
 
-      <Button variant="outline" size="icon" onClick={openNew}>
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={openNew}
+        disabled={!canManage}
+      >
         <PlusIcon className="size-4" />
       </Button>
 
@@ -150,7 +253,7 @@ const handleSelect = async (id: string) => {
         variant="outline" 
         size="icon" 
         onClick={openEdit}
-        disabled={!selectedPrompt || selectedPrompt.isDefault}
+        disabled={!canModifySelected}
       >
         <PencilIcon className="size-4" />
       </Button>
@@ -159,7 +262,7 @@ const handleSelect = async (id: string) => {
         variant="outline" 
         size="icon" 
         onClick={deletePrompt}
-        disabled={!selectedPrompt || selectedPrompt.isDefault}
+        disabled={!canModifySelected}
       >
         <Trash2Icon className="size-4" />
       </Button>

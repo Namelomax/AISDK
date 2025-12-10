@@ -11,7 +11,21 @@ export type Prompt = {
   isDefault: boolean;
   created: string;
   updated: string;
+  ownerId?: string | null;
 };
+
+function toRecordString(record: any): string | null {
+  if (!record) return null;
+  if (typeof record === 'string') return record;
+  if (typeof record === 'object' && typeof record.toString === 'function') {
+    try {
+      return record.toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 function convertToPrompt(record: any): Prompt {
   return {
@@ -21,6 +35,7 @@ function convertToPrompt(record: any): Prompt {
     isDefault: record.isDefault,
     created: record.created,
     updated: record.updated,
+    ownerId: toRecordString(record.owner),
   };
 }
 
@@ -50,11 +65,13 @@ async function connectDB() {
       DEFINE FIELD username ON users TYPE string;
       DEFINE FIELD passwordHash ON users TYPE string;
       DEFINE FIELD created ON users TYPE datetime DEFAULT time::now() READONLY;
+      DEFINE FIELD selectedPrompt ON users TYPE option<record<prompts>>;
 
       DEFINE TABLE prompts SCHEMAFULL;
       DEFINE FIELD title ON prompts TYPE string;
       DEFINE FIELD content ON prompts TYPE string;
       DEFINE FIELD isDefault ON prompts TYPE bool DEFAULT false;
+      DEFINE FIELD owner ON prompts TYPE option<record<users>>;
       DEFINE FIELD created ON prompts TYPE datetime DEFAULT time::now() READONLY;
       DEFINE FIELD updated ON prompts TYPE datetime VALUE time::now();
 
@@ -83,14 +100,75 @@ DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY
 }
 
 // Вспомогательная функция — всегда возвращает корректный формат id
-function normalizeId(id: string): string {
-  return id.startsWith("prompts:") ? id : `prompts:${id}`;
+type PromptIdParts = { table: string; value: string };
+
+function parsePromptId(id: string): PromptIdParts {
+  const raw = String(id ?? '').trim();
+  if (!raw) {
+    return { table: 'prompts', value: '' };
+  }
+
+  if (raw.includes(':')) {
+    const [table, ...rest] = raw.split(':');
+    return { table: table || 'prompts', value: rest.join(':') };
+  }
+
+  return { table: 'prompts', value: raw };
+}
+
+function promptRecordId(id: string): RecordId {
+  const { table, value } = parsePromptId(id);
+  return new RecordId(table || 'prompts', value);
+}
+
+function promptRecordCandidates(id: string): RecordId[] {
+  const raw = String(id ?? '').trim();
+  if (!raw) return [];
+
+  if (raw.includes(':')) {
+    return [promptRecordId(raw)];
+  }
+
+  return [new RecordId('prompts', raw), new RecordId('prompt', raw)];
+}
+
+async function getPromptRecord(id: string): Promise<{ data: any; recordId: RecordId } | null> {
+  await connectDB();
+  const candidates = promptRecordCandidates(id);
+
+  for (const candidate of candidates) {
+    const prompt = await db.select(candidate).catch(() => undefined);
+    const record = Array.isArray(prompt) ? prompt?.[0] : prompt;
+    if (record) {
+      return { data: record, recordId: candidate };
+    }
+  }
+
+  return null;
+}
+
+function normalizeUserId(id: string): string {
+  return id.startsWith('users:') ? id : `users:${id}`;
 }
 
 // Получить все промпты
-export async function getAllPrompts(): Promise<Prompt[]> {
+export async function getAllPrompts(userId?: string): Promise<Prompt[]> {
   await connectDB();
-  const result = (await db.query(`SELECT * FROM prompts ORDER BY updated DESC;`)) as [any[]];
+
+  if (!userId) {
+    const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true ORDER BY updated DESC;`)) as [any[]];
+    return (result?.[0] ?? []).map(convertToPrompt);
+  }
+
+  const normalizedUser = normalizeUserId(userId);
+  const cleanUser = normalizedUser.replace(/^users:/, '');
+  const ownerRecord = new RecordId('users', cleanUser);
+
+  const result = (await db.query(
+    `SELECT * FROM prompts WHERE isDefault = true OR owner = $owner ORDER BY isDefault DESC, updated DESC;`,
+    { owner: ownerRecord },
+  )) as [any[]];
+
   return (result?.[0] ?? []).map(convertToPrompt);
 }
 
@@ -156,8 +234,10 @@ export async function createPromptForUser(userId: string, title: string, content
 // Get prompts for a specific user
 export async function getUserPrompts(userId: string): Promise<Prompt[]> {
   await connectDB();
-  const owner = userId.startsWith('users:') ? userId : `users:${userId}`;
-  const result = (await db.query(`SELECT * FROM prompts WHERE owner = $owner ORDER BY updated DESC;`, { owner })) as [any[]];
+  const owner = normalizeUserId(userId);
+  const cleanOwner = owner.replace(/^users:/, '');
+  const ownerRecord = new RecordId('users', cleanOwner);
+  const result = (await db.query(`SELECT * FROM prompts WHERE owner = $owner ORDER BY updated DESC;`, { owner: ownerRecord })) as [any[]];
   return (result?.[0] ?? []).map(convertToPrompt);
 }
 
@@ -508,16 +588,19 @@ export async function getConversations(userId: string): Promise<Conversation[]> 
 
 // Получить промпт по id
 export async function getPromptById(id: string): Promise<Prompt | null> {
-  await connectDB();
-  const recordId = normalizeId(id);
-  const prompt = await db.select(recordId);
-  if (!prompt) return null;
-  return convertToPrompt(Array.isArray(prompt) ? prompt[0] : prompt);
+  const record = await getPromptRecord(id);
+  if (!record) return null;
+  return convertToPrompt(record.data);
 }
 
 // Создать промпт
-export async function createPrompt(title: string, content: string): Promise<Prompt> {
+export async function createPrompt(title: string, content: string, userId?: string): Promise<Prompt> {
   await connectDB();
+
+  if (userId) {
+    return createPromptForUser(userId, title, content);
+  }
+
   // Ensure there is a system user to own global prompts (avoid NULL owner errors)
   let ownerRef: any = undefined;
   try {
@@ -534,38 +617,42 @@ export async function createPrompt(title: string, content: string): Promise<Prom
   }
 
   if (ownerRef) {
-    const [prompt] = await db.create("prompts", { title, content, isDefault: false, owner: ownerRef });
-    return convertToPrompt(prompt);
-  } else {
-    const [prompt] = await db.create("prompts", { title, content, isDefault: false });
+    const [prompt] = await db.create('prompts', { title, content, isDefault: false, owner: ownerRef });
     return convertToPrompt(prompt);
   }
+
+  const [prompt] = await db.create('prompts', { title, content, isDefault: false });
+  return convertToPrompt(prompt);
 }
 
 // Обновить промпт
-export async function updatePromptById(id: string, title: string, content: string): Promise<Prompt> {
-  await connectDB();
-
-  const cleanId = id.replace(/^prompts:/, "");
-  const recordId = new RecordId("prompts", cleanId);
-
-  console.log("🧠 recordId:", recordId.toString());
-
-  const prompt = await db.select(recordId);
-  console.log("📦 prompt:", prompt);
-
-  const promptData = Array.isArray(prompt) ? prompt[0] : prompt;
-
-  if (!promptData) {
+export async function updatePromptById(
+  id: string,
+  title: string,
+  content: string,
+  userId?: string,
+): Promise<Prompt> {
+  const record = await getPromptRecord(id);
+  if (!record) {
     throw new Error("Prompt not found");
   }
+
+  const promptData = record.data;
 
   if (promptData.isDefault) {
     throw new Error("Cannot edit default prompt");
   }
 
+  if (userId) {
+    const normalizedUser = normalizeUserId(userId);
+    const ownerRef = toRecordString(promptData.owner);
+    if (ownerRef && ownerRef !== normalizedUser) {
+      throw new Error("Access denied");
+    }
+  }
+
   const result = await db.query(
-    `UPDATE ${recordId} SET title = $title, content = $content, updated = time::now() RETURN AFTER;`,
+    `UPDATE ${record.recordId} SET title = $title, content = $content, updated = time::now() RETURN AFTER;`,
     { title, content }
   );
 
@@ -579,27 +666,61 @@ export async function updatePromptById(id: string, title: string, content: strin
 
 
 // Удалить промпт
-export async function deletePromptById(id: string): Promise<void> {
-  await connectDB();
-
-  const cleanId = id.replace(/^prompts:/, "");
-  const recordId = new RecordId("prompts", cleanId);
-
-  console.log("🗑 recordId:", recordId.toString());
-
-  const prompt = await db.select(recordId);
-  const promptData = Array.isArray(prompt) ? prompt[0] : prompt;
-
-  if (!promptData) {
+export async function deletePromptById(id: string, userId?: string): Promise<void> {
+  const record = await getPromptRecord(id);
+  if (!record) {
     throw new Error("Prompt not found");
   }
+
+  const promptData = record.data;
 
   if (promptData.isDefault) {
     throw new Error("Cannot delete default prompt");
   }
 
-  await db.delete(recordId);
-  console.log("✅ Prompt deleted:", recordId.toString());
+  if (userId) {
+    const normalizedUser = normalizeUserId(userId);
+    const ownerRef = toRecordString(promptData.owner);
+    if (ownerRef && ownerRef !== normalizedUser) {
+      throw new Error("Access denied");
+    }
+  }
+
+  await db.delete(record.recordId);
+  console.log("✅ Prompt deleted:", record.recordId.toString());
+}
+
+export async function getUserSelectedPrompt(userId: string): Promise<string | null> {
+  await connectDB();
+  const normalizedUser = normalizeUserId(userId);
+  const cleanUser = normalizedUser.replace(/^users:/, '');
+  const userRecord = new RecordId('users', cleanUser);
+  const userData = await db.select(userRecord).catch(() => undefined);
+  const data = Array.isArray(userData) ? userData[0] : userData;
+  if (!data) return null;
+  return toRecordString(data.selectedPrompt);
+}
+
+export async function setUserSelectedPrompt(userId: string, promptId: string): Promise<void> {
+  await connectDB();
+  const prompt = await getPromptById(promptId);
+  if (!prompt) {
+    throw new Error('Prompt not found');
+  }
+
+  if (!prompt.isDefault) {
+    const normalizedUser = normalizeUserId(userId);
+    if (!prompt.ownerId || prompt.ownerId !== normalizedUser) {
+      throw new Error('Access denied');
+    }
+  }
+
+  const normalizedUser = normalizeUserId(userId);
+  const cleanUser = normalizedUser.replace(/^users:/, '');
+  const userRecord = new RecordId('users', cleanUser);
+  const promptRecord = promptRecordId(prompt.id);
+
+  await db.merge(userRecord, { selectedPrompt: promptRecord });
 }
 
 

@@ -16,7 +16,7 @@ type ReasoningContextValue = {
   isStreaming: boolean;
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
-  duration: number;
+  duration?: number;
 };
 
 const ReasoningContext = createContext<ReasoningContextValue | null>(null);
@@ -35,6 +35,7 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   duration?: number;
+  onDurationMeasured?: (durationSeconds: number) => void;
 };
 
 const AUTO_CLOSE_DELAY = 1000;
@@ -45,9 +46,10 @@ export const Reasoning = memo(
     className,
     isStreaming = false,
     open,
-    defaultOpen = true,
+    defaultOpen = false,
     onOpenChange,
     duration: durationProp,
+    onDurationMeasured,
     children,
     ...props
   }: ReasoningProps) => {
@@ -58,36 +60,42 @@ export const Reasoning = memo(
     });
     const [duration, setDuration] = useControllableState({
       prop: durationProp,
-      defaultProp: 0,
+      defaultProp: durationProp,
     });
 
     const [hasAutoClosed, setHasAutoClosed] = useState(false);
+    const [hasAutoOpened, setHasAutoOpened] = useState(false);
     const [startTime, setStartTime] = useState<number | null>(null);
 
-    // Track duration when streaming starts and ends
     useEffect(() => {
-      if (isStreaming) {
-        if (startTime === null) {
-          setStartTime(Date.now());
-        }
-      } else if (startTime !== null) {
-        setDuration(Math.ceil((Date.now() - startTime) / MS_IN_S));
-        setStartTime(null);
+      if (!isStreaming) return;
+      if (startTime === null) {
+        setStartTime(Date.now());
       }
-    }, [isStreaming, startTime, setDuration]);
+      setIsOpen(true);
+      setHasAutoOpened(true);
+      setHasAutoClosed(false);
+    }, [isStreaming, startTime, setIsOpen]);
 
-    // Auto-open when streaming starts, auto-close when streaming ends (once only)
     useEffect(() => {
-      if (defaultOpen && !isStreaming && isOpen && !hasAutoClosed) {
-        // Add a small delay before closing to allow user to see the content
-        const timer = setTimeout(() => {
-          setIsOpen(false);
-          setHasAutoClosed(true);
-        }, AUTO_CLOSE_DELAY);
+      if (isStreaming || startTime === null) return;
+      const elapsed = Math.max(1, Math.ceil((Date.now() - startTime) / MS_IN_S));
+      setDuration(elapsed);
+      onDurationMeasured?.(elapsed);
+      setStartTime(null);
+    }, [isStreaming, startTime, onDurationMeasured, setDuration]);
 
-        return () => clearTimeout(timer);
-      }
-    }, [isStreaming, isOpen, defaultOpen, setIsOpen, hasAutoClosed]);
+    // Auto-close when streaming ends after short delay (only if auto-opened)
+    useEffect(() => {
+      if (!hasAutoOpened || isStreaming || !isOpen || hasAutoClosed) return;
+      const timer = setTimeout(() => {
+        setIsOpen(false);
+        setHasAutoClosed(true);
+        setHasAutoOpened(false);
+      }, AUTO_CLOSE_DELAY);
+
+      return () => clearTimeout(timer);
+    }, [hasAutoOpened, isStreaming, isOpen, hasAutoClosed, setIsOpen]);
 
     const handleOpenChange = (newOpen: boolean) => {
       setIsOpen(newOpen);
@@ -113,10 +121,10 @@ export const Reasoning = memo(
 export type ReasoningTriggerProps = ComponentProps<typeof CollapsibleTrigger>;
 
 const getThinkingMessage = (isStreaming: boolean, duration?: number) => {
-  if (isStreaming || duration === 0) {
+  if (isStreaming) {
     return <p>Thinking...</p>;
   }
-  if (duration === undefined) {
+  if (typeof duration !== 'number' || duration <= 0) {
     return <p>Thought for a few seconds</p>;
   }
   return <p>Thought for {duration} seconds</p>;
