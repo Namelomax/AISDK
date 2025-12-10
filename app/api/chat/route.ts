@@ -152,26 +152,12 @@ ${doc.content}`,
     ...supplementalMessages,
   ];
 
-  const experimentalOutput = withStructuredOutput(!tools, () => Output.object({
-    schema: z.object({
-      text: z.string(),
-      results: z.array(
-        z.object({
-          title: z.string(),
-          link: z.string(),
-          snippet: z.string(),
-        })
-      ).optional(),
-    }),
-  }));
-
     return streamText({
       model,
       tools,
       messages: convertToModelMessages(extendedMessages),
     
       system: systemPrompt + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
-      ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
     });
 }
 
@@ -223,13 +209,31 @@ export async function POST(req: Request) {
         }]
       : []);
 
-  const normalizedMessages: any[] = baseMessages.map((m: any) => ({
-    id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
-    role: ['assistant', 'user', 'system', 'tool'].includes(m.role) ? m.role : 'user',
-    content: toPlainText(m),
-    parts: [{ type: 'text' as const, text: toPlainText(m) }],
-    metadata: m.metadata,
-  }));
+  const normalizedMessages: any[] = baseMessages.map((m: any) => {
+    const baseText = toPlainText(m);
+    const attachments = Array.isArray(m?.metadata?.attachments)
+      ? m.metadata.attachments
+      : [];
+
+    const attachmentsText = attachments
+      .map((att: any) => {
+        const name = att?.name ? String(att.name) : 'attachment';
+        const content = att?.content ? String(att.content) : '';
+        return content ? `Файл: ${name}\n${content}` : '';
+      })
+      .filter(Boolean)
+      .join('\n\n');
+
+    const combined = attachmentsText ? `${baseText}\n\n${attachmentsText}` : baseText;
+
+    return {
+      id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+      role: ['assistant', 'user', 'system', 'tool'].includes(m.role) ? m.role : 'user',
+      content: combined,
+      parts: [{ type: 'text' as const, text: combined }],
+      metadata: m.metadata,
+    };
+  });
 
   try {
     const url = new URL(req.url);
@@ -392,6 +396,15 @@ ${lastText}
   }
 
   const intent = { type: intentType };
+  const userMessageCount = normalizedMessages.filter((m) => m.role === 'user').length;
+  // Избегаем автоперехода в document на самом первом сообщении — отвечаем как обычный чат
+  if (intent.type === 'document' && userMessageCount <= 1) {
+    intent.type = 'chat';
+  }
+  // Если документ ещё не на финальной стадии, не показываем заготовки — продолжаем как чат
+  if (intent.type === 'document' && conversationStage !== 'completion_ready') {
+    intent.type = 'chat';
+  }
 
   console.log('Detected intent:', intent.type);
 
@@ -521,11 +534,6 @@ ${lastText}
   }
 
   if (intent.type === 'casual') {
-    const experimentalOutput = withStructuredOutput(!baseTools, () => Output.object({
-      schema: z.object({
-        text: z.string().describe('Короткий ответ пользователю.'),
-      }),
-    }));
     const stream = streamText({
       model,
       tools: baseTools,
@@ -536,7 +544,6 @@ ${lastText}
         `
 Ты — дружелюбный ассистент. Отвечай просто и понятно. Если есть дополнительная информация, используй её.
 `,
-      ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
     });
     const resp = stream.toUIMessageStreamResponse({
       originalMessages: normalizedMessages,
@@ -559,17 +566,11 @@ ${lastText}
 
   // Основной диалог
   const stageSpecificPrompt = getStageSpecificPrompt(conversationStage);
-  const experimentalOutput = withStructuredOutput(!baseTools, () => Output.object({
-    schema: z.object({
-      text: z.string().describe('Ответ пользователю для продолжения диалога'),
-    }),
-  }));
   const stream = streamText({
     model,
     tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
     system: systemPrompt + stageSpecificPrompt + urlContextHint,
-    ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
   });
   const resp = stream.toUIMessageStreamResponse({
     originalMessages: normalizedMessages,
@@ -823,7 +824,8 @@ ${conversationContext}`;
 
   let bufferedForTitle = '';
   let publishedFinalTitle = false;
-  let titleRemovedFromStream = false;
+  let headingBuffer = '';
+  let headingRemoved = false;
   let finalTitle = placeholderTitle;
   let hasEmittedContent = false;
   let fullContent = '';
@@ -837,27 +839,31 @@ ${conversationContext}`;
     chunk = chunk.replace(/```markdown\s*/gi, '').replace(/```/g, '');
     if (!chunk) continue;
 
-    if (!publishedFinalTitle) {
-      bufferedForTitle += chunk;
-      const match = bufferedForTitle.match(/#\s*(.+?)(?:\n|$)/);
-      if (match) {
-        finalTitle = match[1].trim() || finalTitle;
-        dataStream.write({ type: 'data-title', data: finalTitle });
-        publishedFinalTitle = true;
-        bufferedForTitle = '';
-      } else if (bufferedForTitle.length > 4000) {
-        bufferedForTitle = bufferedForTitle.slice(-4000);
+    // Буферизуем первую строку с заголовком, чтобы не было разрывов внутри слова
+    if (!headingRemoved) {
+      headingBuffer += chunk;
+      const newlineIdx = headingBuffer.indexOf('\n');
+      if (newlineIdx === -1) {
+        continue; // ждём окончания строки с заголовком
       }
-    }
 
-    if (!titleRemovedFromStream) {
-      const trimmedOnce = chunk
-        .replace(/^#\s.*(?:\n|$)/, '')
-        .replace(/^Р\s*$/u, '')
-        .replace(/^#\s*Р\s*(?:\n|$)/u, '');
-      if (trimmedOnce !== chunk) {
-        chunk = trimmedOnce;
-        titleRemovedFromStream = true;
+      const headingLine = headingBuffer.slice(0, newlineIdx);
+      const restAfterHeading = headingBuffer.slice(newlineIdx + 1);
+
+      if (!publishedFinalTitle) {
+        const match = headingLine.match(/^#\s*(.+)$/);
+        if (match) {
+          finalTitle = match[1].trim() || finalTitle;
+          dataStream.write({ type: 'data-title', data: finalTitle });
+          publishedFinalTitle = true;
+        }
+      }
+
+      chunk = restAfterHeading;
+      headingBuffer = '';
+      headingRemoved = true;
+      if (!chunk) {
+        continue;
       }
     }
 

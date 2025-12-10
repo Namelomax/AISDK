@@ -77,11 +77,13 @@
   --sidebar-border: oklch(0.928 0.006 264.531);
   --sidebar-ring: oklch(0.707 0.022 261.325);
 }
-.hide-scrollbar {
+.hide-scrollbar,
+.no-scrollbar {
   scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* IE и Edge */
+  -ms-overflow-style: none; /* IE and Edge */
 }
-.hide-scrollbar::-webkit-scrollbar {
+.hide-scrollbar::-webkit-scrollbar,
+.no-scrollbar::-webkit-scrollbar {
   display: none; /* Chrome, Safari */
 }
 
