@@ -200,7 +200,31 @@ export async function POST(req: Request) {
     messages = [];
   }
 
-  const normalizedMessages: any[] = Array.isArray(messages) && messages.length > 0
+  const toPlainText = (msg: any): string => {
+    if (Array.isArray(msg.parts)) {
+      const textPart = msg.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string');
+      if (textPart?.text) return String(textPart.text);
+    }
+
+    if (typeof msg.content === 'string') return msg.content;
+
+    if (Array.isArray(msg.content)) {
+      const joined = msg.content
+        .map((c: any) => {
+          if (typeof c === 'string') return c;
+          if (c?.text) return String(c.text);
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+      if (joined) return joined;
+    }
+
+    if (typeof msg.text === 'string') return msg.text;
+    return '';
+  };
+
+  const baseMessages: any[] = Array.isArray(messages) && messages.length > 0
     ? messages
     : (body && (body.text || body.message)
       ? [{
@@ -210,6 +234,14 @@ export async function POST(req: Request) {
           content: String(body.text ?? body.message ?? ''),
         }]
       : []);
+
+  const normalizedMessages: any[] = baseMessages.map((m: any) => ({
+    id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    role: ['assistant', 'user', 'system', 'tool'].includes(m.role) ? m.role : 'user',
+    content: toPlainText(m),
+    parts: [{ type: 'text' as const, text: toPlainText(m) }],
+    metadata: m.metadata,
+  }));
 
   try {
     const url = new URL(req.url);
@@ -271,8 +303,8 @@ export async function POST(req: Request) {
   ];
 
   // Определяем этап диалога
-  function determineConversationStage(messages: any[]): ConversationStage {
-    const userMessages = messages.filter((m) => m.role === 'user');
+  function determineConversationStage(msgs: any[]): ConversationStage {
+    const userMessages = msgs.filter((m) => m.role === 'user');
     const count = userMessages.length;
 
     if (count === 1) return 'start';
@@ -283,11 +315,11 @@ export async function POST(req: Request) {
     return 'completion_ready';
   }
 
-  const conversationStage = determineConversationStage(messages);
+  const conversationStage = determineConversationStage(normalizedMessages);
 
   console.log('Conversation stage:', conversationStage);
   console.log('🔍 Debug Info:', {
-    totalMessages: messages.length,
+    totalMessages: normalizedMessages.length,
     lastUserMessage: lastText.substring(0, 150),
     conversationStage,
   });
@@ -300,8 +332,8 @@ export async function POST(req: Request) {
         try { const u = new URL(req.url); return u.searchParams.get('conversationId'); } catch { return null; }
       })();
 
-      const msgsToSave: any[] = Array.isArray(messages) && messages.length > 0
-        ? messages
+      const msgsToSave: any[] = normalizedMessages.length > 0
+        ? normalizedMessages
         : (lastUserMessage ? [lastUserMessage] : (body && (body.text || body.message) ? [{
             id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
             role: 'user',
@@ -369,10 +401,10 @@ ${lastText}
   // === Роутинг по агентам ===
   if (intent.type === 'generate_regulation') {
     const stream = createUIMessageStream({
-      originalMessages: messages,
+      originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
         try {
-          await generateFinalRegulation(messages, systemPrompt, writer);
+          await generateFinalRegulation(normalizedMessages, systemPrompt, writer);
         } catch (error) {
           console.error('Regulation generation error:', error);
           writer.write({ type: 'text-start', id: 'error' });
@@ -405,10 +437,10 @@ ${lastText}
   if (intent.type === 'document') {
     if (conversationStage === 'completion_ready') {
       const stream = createUIMessageStream({
-        originalMessages: messages,
+        originalMessages: normalizedMessages,
         execute: async ({ writer }) => {
           try {
-            await generateFinalRegulation(messages, systemPrompt, writer);
+            await generateFinalRegulation(normalizedMessages, systemPrompt, writer);
           } catch (error) {
             console.error('Document intent -> regulation error:', error);
             writer.write({ type: 'text-start', id: 'doc-error' });
@@ -439,7 +471,7 @@ ${lastText}
     }
 
     const stream = createUIMessageStream({
-      originalMessages: messages,
+      originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
         writer.write({ type: 'data-clear', data: null });
         writer.write({ type: 'data-title', data: '' });
@@ -471,9 +503,9 @@ ${lastText}
   }
 
   if (intent.type === 'search') {
-    const stream = await serpAgent(messages, systemPrompt, baseTools, urlContextHint);
+    const stream = await serpAgent(normalizedMessages, systemPrompt, baseTools, urlContextHint);
     const resp = stream.toUIMessageStreamResponse({
-      originalMessages: messages,
+      originalMessages: normalizedMessages,
       onFinish: async ({ messages: finished }) => {
         if (userId) {
           try {
@@ -518,7 +550,7 @@ ${lastText}
       experimental_transform: smoothStream(),
     });
     const resp = stream.toUIMessageStreamResponse({
-      originalMessages: messages,
+      originalMessages: normalizedMessages,
       onFinish: async ({ messages: finished }) => {
         if (userId) {
           try {
@@ -559,7 +591,7 @@ ${lastText}
     experimental_transform: smoothStream(),
   });
   const resp = stream.toUIMessageStreamResponse({
-    originalMessages: messages,
+    originalMessages: normalizedMessages,
     onFinish: async ({ messages: finished }) => {
       if (userId) {
         try {
