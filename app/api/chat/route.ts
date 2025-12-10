@@ -1,10 +1,9 @@
-import { google, createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { 
   streamText, 
   UIMessage, 
   convertToModelMessages, 
   Output, 
-  smoothStream,
   createUIMessageStream,
   JsonToSseTransformStream,
 } from 'ai';
@@ -14,11 +13,17 @@ import { getPrompt, updatePrompt, saveConversation, createPromptForUser, updateC
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
-const googleWithProxy = createGoogleGenerativeAI({
-  apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY!,
-  baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
+const openrouter = createOpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  baseURL: 'https://openrouter.ai/api/v1',
+  compatibility: 'strict',
+  headers: {
+    ...(process.env.OPENROUTER_REFERER ? { 'HTTP-Referer': process.env.OPENROUTER_REFERER } : {}),
+    'X-Title': 'AISDK',
+  },
 });
-const model = google('gemini-2.5-flash');
+
+const model = openrouter.chat('nvidia/nemotron-nano-12b-v2-vl:free');
 
 
 let cachedPrompt: string | null = null;
@@ -35,11 +40,6 @@ function extractUrls(text?: string | null): string[] {
     .filter((url) => url.toLowerCase().startsWith('http'));
   const unique = Array.from(new Set(sanitized));
   return unique.slice(0, 20);
-}
-
-function createUrlContextTool(urls: string[]) {
-  if (!urls.length) return undefined;
-  return google.tools.urlContext({});
 }
 
 function withStructuredOutput<T>(
@@ -99,7 +99,6 @@ async function serpAgent(
   messages: UIMessage[],
   systemPrompt: string,
   tools?: Record<string, any>,
-  urlHint?: string,
 ) {
   const normalizedMessages: UIMessage[] = messages.map((m: any) => {
     const text =
@@ -166,25 +165,14 @@ ${doc.content}`,
     }),
   }));
 
-  return streamText({
-    model,
-    providerOptions: {
-      google: {
-        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-        stream: true,
-        thinkingConfig: {
-          thinkingBudget: -1,
-          includeThoughts: true,
-        },
-      },
-    },
-    tools,
-    messages: convertToModelMessages(extendedMessages),
+    return streamText({
+      model,
+      tools,
+      messages: convertToModelMessages(extendedMessages),
     
-    system: systemPrompt + (urlHint ?? '') + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
-    ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
-    experimental_transform: smoothStream(),
-});
+      system: systemPrompt + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
+      ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
+    });
 }
 
 // Основной POST
@@ -280,10 +268,9 @@ export async function POST(req: Request) {
     lastUserMessage?.parts?.find((p: any) => p.type === 'text')?.text ||
     '';
   const linkedUrls = extractUrls(lastText);
-  const urlContextTool = createUrlContextTool(linkedUrls);
-  const baseTools = urlContextTool ? ({ url_context: urlContextTool } as Record<string, any>) : undefined;
+  const baseTools = undefined;
   const urlContextHint = linkedUrls.length
-    ? `\nДоступны ссылки пользователя (до 20) для анализа: ${linkedUrls.join(', ')}. Если это помогает, вызови инструмент url_context, чтобы получить содержание ссылок.\n`
+    ? `\nДоступны ссылки пользователя (до 20) для анализа: ${linkedUrls.join(', ')}.`
     : '';
   const resolvedLinkContexts = await resolveUrlContexts(linkedUrls);
   const supplementalMessages: UIMessage[] = resolvedLinkContexts.map((doc) => ({
@@ -364,20 +351,28 @@ export async function POST(req: Request) {
   }
 
   // Определяем намерение пользователя
-  const { object: intent } = await (await import('ai')).generateObject({
-    model,
-    system: systemPrompt,
-    providerOptions: {
-      google: {
-        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-        stream: true,
-        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
-      },
-    },
-    schema: z.object({
-      type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
-    }),
-    prompt: `
+  let intentType: 'chat' | 'document' | 'search' | 'generate_regulation' | 'casual' = 'chat';
+  const lowered = lastText.toLowerCase();
+  const strongRegulationRequest = lowered.includes('регламент') && (
+    lowered.includes('сформ') ||
+    lowered.includes('вывед') ||
+    lowered.includes('подготов') ||
+    lowered.includes('сдел') ||
+    lowered.includes('оформ') ||
+    lowered.includes('созд')
+  );
+
+  if (strongRegulationRequest) {
+    intentType = 'generate_regulation';
+  } else {
+    try {
+      const { object: intentObj } = await (await import('ai')).generateObject({
+        model,
+        system: systemPrompt,
+        schema: z.object({
+          type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
+        }),
+        prompt: `
 Ты — классификатор пользовательских сообщений.
 
 Этап диалога: ${conversationStage}
@@ -386,15 +381,17 @@ export async function POST(req: Request) {
 ${lastText}
 """
 
-Варианты:
-- generate_regulation — завершение, формирование регламента
-- document — редактирование промежуточного документа
-- search — запрос на поиск информации
-- chat — обычное продолжение диалога
-- casual — общение, комментарии, анализ, пояснения, если пользователь просит объяснение, резюме, краткое содержание или просто ответ (включая "выведи, что в файлах")
-Ответь только одним словом из списка выше.
+Верни ТОЛЬКО JSON формата {"type":"<одно из значений>"} без каких-либо пояснений, текста или Markdown. Никаких обоснований.
+Варианты type: generate_regulation, document, search, chat, casual.
 `,
-  });
+      });
+      intentType = intentObj.type;
+    } catch (err) {
+      console.error('Intent classification failed, defaulting to chat:', err);
+    }
+  }
+
+  const intent = { type: intentType };
 
   console.log('Detected intent:', intent.type);
 
@@ -503,7 +500,7 @@ ${lastText}
   }
 
   if (intent.type === 'search') {
-    const stream = await serpAgent(normalizedMessages, systemPrompt, baseTools, urlContextHint);
+    const stream = await serpAgent(normalizedMessages, systemPrompt, baseTools);
     const resp = stream.toUIMessageStreamResponse({
       originalMessages: normalizedMessages,
       onFinish: async ({ messages: finished }) => {
@@ -531,13 +528,6 @@ ${lastText}
     }));
     const stream = streamText({
       model,
-      providerOptions: {
-        google: {
-          baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-          stream: true,
-          thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
-        },
-      },
       tools: baseTools,
       messages: convertToModelMessages(extendedMessages),
       system:
@@ -547,7 +537,6 @@ ${lastText}
 Ты — дружелюбный ассистент. Отвечай просто и понятно. Если есть дополнительная информация, используй её.
 `,
       ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
-      experimental_transform: smoothStream(),
     });
     const resp = stream.toUIMessageStreamResponse({
       originalMessages: normalizedMessages,
@@ -577,18 +566,10 @@ ${lastText}
   }));
   const stream = streamText({
     model,
-    providerOptions: {
-      google: {
-        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-        stream: true,
-        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
-      },
-    },
     tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
     system: systemPrompt + stageSpecificPrompt + urlContextHint,
     ...(experimentalOutput ? { experimental_output: experimentalOutput } : {}),
-    experimental_transform: smoothStream(),
   });
   const resp = stream.toUIMessageStreamResponse({
     originalMessages: normalizedMessages,
@@ -631,7 +612,6 @@ function wrapReadableWithSessionSave(readable: ReadableStream, userId?: string |
   return new Response(wrapped, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-// Helper to wrap an existing Response (from stream.toUIMessageStreamResponse())
 function wrapResponseWithSessionSave(resp: Response, userId?: string | null) {
   const body = resp.body;
   if (!body) return resp;
@@ -788,45 +768,39 @@ async function generateFinalRegulation(
 
   const directive = `На основе всей истории диалога ниже сформируй итоговый регламент. Используй ТОЛЬКО подтверждённые факты из переписки.
 
-  Структура обязательна и должна быть ровно такой (Markdown). После каждого заголовка раздела оставляй пустую строку, а подпункты не начинай с табов или четырёх пробелов:
+Структура обязательна и должна быть ровно такой (Markdown). После каждого заголовка раздела оставляй пустую строку, а подпункты не начинай с табов или четырёх пробелов:
 
 # Название регламента
 
-  **1. Общие положения**
+**1. Общие положения**
 
-  1.1. ... (и так далее)
+1.1. ... (и так далее)
 
 **2. Общее описание процесса**
 
-  2.1. ...
+2.1. ...
 
 **3. Детальное описание шагов процесса**
 
-  3.1. ...
+3.1. ...
 
 **4. Управление процессом**
 
-  4.1. ...
+4.1. ...
 
-  Правила форматирования:
-  - Всегда добавляй пустую строку между строкой вида «**N. …**» и пунктами «N.1, N.2 …».
-  - Не используй отступы из четырёх пробелов перед нумерованными пунктами.
-  - Если данных нет — пиши «*Информация не предоставлена в диалоге.*».
-
-  Никаких пояснений вне структуры.
+Правила форматирования:
+- Всегда добавляй пустую строку между строкой вида «**N. …**» и пунктами «N.1, N.2 …».
+- Не используй отступы из четырёх пробелов перед нумерованными пунктами.
+- Если данных нет — пиши «*Информация не предоставлена в диалоге.*».
+- Никаких пояснений вне структуры.
+- Никаких кодовых блоков и тройных кавычек \"\"\", ни \"\"\"markdown\"\"\".
+- Сразу выводи чистый Markdown без ограждений.
 
 История диалога:
 ${conversationContext}`;
 
   const stream = await streamText({
     model,
-    providerOptions: {
-      google: {
-        baseURL: 'https://purple-wildflower-18a.namelomaxer.workers.dev',
-        stream: true,
-        thinkingConfig: { thinkingBudget: -1, includeThoughts: true },
-      },
-    },
     system: systemPrompt,
     messages: [
       {
@@ -859,6 +833,10 @@ ${conversationContext}`;
     let chunk = String(part.text ?? '').replace(/\r/g, '');
     if (!chunk) continue;
 
+    // удаляем возможные кодовые блоки, если модель всё же их добавила
+    chunk = chunk.replace(/```markdown\s*/gi, '').replace(/```/g, '');
+    if (!chunk) continue;
+
     if (!publishedFinalTitle) {
       bufferedForTitle += chunk;
       const match = bufferedForTitle.match(/#\s*(.+?)(?:\n|$)/);
@@ -873,7 +851,10 @@ ${conversationContext}`;
     }
 
     if (!titleRemovedFromStream) {
-      const trimmedOnce = chunk.replace(/^#\s.*(?:\n|$)/, '');
+      const trimmedOnce = chunk
+        .replace(/^#\s.*(?:\n|$)/, '')
+        .replace(/^Р\s*$/u, '')
+        .replace(/^#\s*Р\s*(?:\n|$)/u, '');
       if (trimmedOnce !== chunk) {
         chunk = trimmedOnce;
         titleRemovedFromStream = true;

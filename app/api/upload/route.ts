@@ -11,7 +11,6 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify({ error: "Файл не найден" }), { status: 400 });
   }
 
-  // Преобразуем файл в base64
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
