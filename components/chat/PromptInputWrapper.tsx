@@ -125,7 +125,7 @@ export const PromptInputWrapper = ({
     if (status !== 'ready') return;
 
     const preparedFiles: FileUIPart[] = [];
-    let hiddenPart = '';
+    const extractedHiddenTexts: string[] = [];
     const trimmedText = (message.text || '').trim();
 
     if (message.files?.length) {
@@ -136,7 +136,7 @@ export const PromptInputWrapper = ({
           try {
             const extracted = await extractTextFromFileUIPart(file);
             if (extracted.trim().length > 0) {
-              hiddenPart += `<AI-HIDDEN>\n${extracted}\n</AI-HIDDEN>\n`;
+              extractedHiddenTexts.push(extracted.trim());
             }
           } catch (error) {
             console.error('Failed extraction:', error);
@@ -148,10 +148,8 @@ export const PromptInputWrapper = ({
       }
     }
 
-    const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0 || hiddenPart.trim().length > 0;
+    const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0 || extractedHiddenTexts.length > 0;
     if (!hasPayload) return;
-
-    const outgoingText = `${hiddenPart}${trimmedText}`;
 
     await ensureConversationCreated(
       authUser,
@@ -159,13 +157,15 @@ export const PromptInputWrapper = ({
       setConversationsList,
       setConversationId,
       setMessages,
-      outgoingText
+      trimmedText
     );
 
     sendMessage({
-      text: outgoingText,
+      text: trimmedText,
       files: preparedFiles,
-    });
+      // pass hidden extracted text for server-side system injection
+      ...(extractedHiddenTexts.length ? { metadata: { hiddenTexts: extractedHiddenTexts } } : {}),
+    } as any);
 
     setInput('');
   };

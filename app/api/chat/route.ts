@@ -52,6 +52,32 @@ const MAX_DOC_CONTEXT_CHARS = 4000;
 const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 const HIDDEN_CAPTURE_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 
+function dataUrlToBuffer(dataUrl?: string | null): Buffer | null {
+  if (!dataUrl) return null;
+  const match = String(dataUrl).match(/^data:[^;]+;base64,(.+)$/i);
+  if (!match) return null;
+  try {
+    return Buffer.from(match[1], 'base64');
+  } catch {
+    return null;
+  }
+}
+
+async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
+  if (!att || att.mediaType !== 'application/pdf') return null;
+  const buf = dataUrlToBuffer(att.url || att.data);
+  if (!buf) return null;
+  try {
+    const { default: pdfParse } = await import('pdf-parse');
+    const parsed = await pdfParse(buf);
+    const text = parsed?.text?.trim();
+    return text || null;
+  } catch (error) {
+    console.error('Failed to parse PDF attachment:', error);
+    return null;
+  }
+}
+
 function extractUrls(text?: string | null): string[] {
   if (!text) return [];
   const matches = text.match(URL_REGEX);
@@ -279,6 +305,23 @@ export async function POST(req: Request) {
       metadata: { ...(m.metadata || {}), attachments, hiddenTexts },
     };
   });
+
+  // Enrich hiddenTexts with PDF extraction on the server side
+  for (const msg of normalizedMessages) {
+    const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
+    const pdfs = atts.filter((a) => a?.mediaType === 'application/pdf');
+    if (!pdfs.length) continue;
+
+    const pdfTexts = await Promise.all(pdfs.map(extractPdfTextFromAttachment));
+    const extracted = pdfTexts.filter((t): t is string => Boolean(t && t.trim()));
+    if (extracted.length) {
+      msg.metadata = {
+        ...(msg.metadata || {}),
+        attachments: atts,
+        hiddenTexts: [...(msg.metadata?.hiddenTexts || []), ...extracted],
+      };
+    }
+  }
 
   try {
     const url = new URL(req.url);
