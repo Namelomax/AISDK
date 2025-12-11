@@ -5,7 +5,7 @@ import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
-import { RefreshCcw, Copy, Check, Wrench } from 'lucide-react';
+import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon } from 'lucide-react';
 
 const ToolsDisplay = ({ tools, isStreaming }: { tools: any[]; isStreaming: boolean }) => {
   const [isOpen, setIsOpen] = useState(true);
@@ -75,6 +75,53 @@ const renderTextResponse = (rawText: string, key: string) => {
   return <Response key={key}>{rawText}</Response>;
 };
 
+type Attachment = {
+  id?: string;
+  name?: string;
+  url?: string;
+  mediaType?: string;
+};
+
+const renderAttachment = (att: Attachment, index: number) => {
+  const isImage = att.mediaType?.startsWith('image/') && att.url;
+  const fallbackName = att.name || 'attachment';
+  return (
+    <div
+      key={att.id || index}
+      className="flex items-center gap-3 rounded-lg border bg-muted/30 p-2"
+    >
+      <div className="flex size-12 items-center justify-center overflow-hidden rounded-md border bg-background">
+        {isImage ? (
+          <img
+            src={att.url}
+            alt={fallbackName}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex items-center gap-1 text-muted-foreground text-xs">
+            <Paperclip className="size-4" />
+            <FileText className="size-4" />
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{fallbackName}</div>
+        <div className="text-xs text-muted-foreground truncate">{att.mediaType || 'file'}</div>
+      </div>
+      {att.url && !att.url.startsWith('data:') && (
+        <a
+          className="text-xs text-blue-600 hover:underline"
+          href={att.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Открыть
+        </a>
+      )}
+    </div>
+  );
+};
+
 const getReasoningDurationSeconds = (part: any): number | undefined => {
   const metadata = part?.metadata ?? {};
   const directSeconds = [
@@ -121,6 +168,19 @@ export const MessageRenderer = ({
   onRegenerate,
   onCopy,
 }: MessageRendererProps) => {
+  const attachments: Attachment[] = Array.isArray(message?.metadata?.attachments)
+    ? message.metadata.attachments
+    : Array.isArray(message?.parts)
+      ? message.parts
+          .filter((p: any) => p?.type === 'file')
+          .map((p: any) => ({
+            id: p.id,
+            name: p.filename,
+            url: p.url,
+            mediaType: p.mediaType,
+          }))
+      : [];
+
   const textParts = message.parts.filter(
     (part: any): part is { type: 'text'; text: string } => part.type === 'text'
   );
@@ -134,6 +194,18 @@ export const MessageRenderer = ({
   return (
     <Message from={message.role}>
       <MessageContent>
+        {attachments.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+              <ImageIcon className="size-4" />
+              Вложения ({attachments.length})
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {attachments.map((att, idx) => renderAttachment(att, idx))}
+            </div>
+          </div>
+        )}
+
         {reasoningParts.map((part: any, index: number) => (
           <Reasoning
             key={index}

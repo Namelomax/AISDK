@@ -138,11 +138,12 @@ export const PromptInputWrapper = ({
             if (extracted.trim().length > 0) {
               hiddenPart += `<AI-HIDDEN>\n${extracted}\n</AI-HIDDEN>\n`;
             }
-            continue;
           } catch (error) {
             console.error('Failed extraction:', error);
           }
         }
+
+        // Always keep the file as an attachment so it is visible in the UI/history
         preparedFiles.push(file);
       }
     }

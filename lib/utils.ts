@@ -20,6 +20,7 @@ export async function convertBlobFilesToDataURLs(files: File[]): Promise<string[
 
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
+import pdfParse from 'pdf-parse';
 
 const decodeEntities = (input: string): string =>
   input
@@ -127,6 +128,20 @@ export async function extractTextFromFileUIPart(file: FileUIPart): Promise<strin
       return binaryBufferToText(buffer);
     }
 
+    // ----- PDF -----
+    if (mimeType === 'application/pdf') {
+      try {
+        const parsed = await pdfParse(Buffer.from(buffer));
+        if (parsed.text?.trim()) {
+          return parsed.text;
+        }
+      } catch (error) {
+        console.error('Failed to parse PDF via pdf-parse, falling back to binary text', error);
+      }
+      // fallback: try to decode any embedded text as best-effort
+      return binaryBufferToText(buffer);
+    }
+
     // ----- Plain text -----
     if (mimeType.startsWith("text/")) {
       return await blob.text();
@@ -148,6 +163,7 @@ export function isTextExtractable(mimeType: string): boolean {
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     'application/vnd.ms-powerpoint',
+    'application/pdf',
     'text/plain',
     'text/markdown',
     'text/csv',

@@ -8,7 +8,7 @@ import {
   JsonToSseTransformStream,
 } from 'ai';
 import { z } from 'zod';
-import { getPrompt, updatePrompt, saveConversation, createPromptForUser, updateConversation } from '@/lib/getPromt';
+import { getPrompt, updatePrompt, saveConversation, createPromptForUser, updateConversation, getUserSelectedPrompt, getPromptById } from '@/lib/getPromt';
 
 
 export const maxDuration = 90;
@@ -28,8 +28,29 @@ const model = openrouter.chat('nvidia/nemotron-nano-12b-v2-vl:free');
 
 let cachedPrompt: string | null = null;
 
+async function resolveSystemPrompt(userId?: string | null): Promise<string> {
+  // Prefer the user's selected prompt when available
+  if (userId) {
+    try {
+      const selectedId = await getUserSelectedPrompt(userId);
+      if (selectedId) {
+        const prompt = await getPromptById(selectedId);
+        if (prompt?.content) return prompt.content;
+      }
+    } catch (error) {
+      console.error('Failed to load user prompt, falling back to default:', error);
+    }
+  }
+
+  // Fallback to cached default prompt
+  if (!cachedPrompt) cachedPrompt = await getPrompt();
+  return cachedPrompt;
+}
+
 const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi;
 const MAX_DOC_CONTEXT_CHARS = 4000;
+const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
+const HIDDEN_CAPTURE_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 
 function extractUrls(text?: string | null): string[] {
   if (!text) return [];
@@ -86,14 +107,6 @@ async function resolveUrlContexts(urls: string[]): Promise<Array<{ url: string; 
 }
 
 
-async function ensurePrompt() {
-  console.log(cachedPrompt,"cachedPrompt")
-  
-  if (!cachedPrompt) cachedPrompt = await getPrompt();
-  return cachedPrompt;
-}
-
-
 // Serp агент
 async function serpAgent(
   messages: UIMessage[],
@@ -124,7 +137,6 @@ async function serpAgent(
   const resp = await fetch(
     `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${process.env.SERP_API_KEY}`
   );
-
   const json = await resp.json();
 
   const results =
@@ -210,10 +222,43 @@ export async function POST(req: Request) {
       : []);
 
   const normalizedMessages: any[] = baseMessages.map((m: any) => {
-    const baseText = toPlainText(m);
-    const attachments = Array.isArray(m?.metadata?.attachments)
-      ? m.metadata.attachments
+    const rawText = toPlainText(m);
+
+    const hiddenMatches = rawText.match(HIDDEN_CAPTURE_RE) || [];
+    const hiddenTexts = hiddenMatches
+      .map((segment) => segment.replace(/<AI-HIDDEN>/gi, '').replace(/<\/AI-HIDDEN>/gi, '').trim())
+      .filter(Boolean);
+
+    const visibleText = rawText.replace(HIDDEN_RE, '').trim();
+
+    const fileParts = Array.isArray(m?.parts)
+      ? m.parts.filter((p: any) => p?.type === 'file')
       : [];
+
+    const attachmentsFromParts = fileParts
+      .map((file: any) => {
+        const url = file?.url || file?.data || '';
+        if (!url) return null;
+        return {
+          id: file.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+          name: file.filename || 'attachment',
+          url,
+          mediaType: file.mediaType || file.mimeType,
+        };
+      })
+      .filter(Boolean);
+
+    const attachmentsFromMeta = Array.isArray(m?.metadata?.attachments)
+      ? m.metadata.attachments.map((att: any) => ({
+          id: att.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+          name: att.name || att.filename || 'attachment',
+          url: att.url || att.data || '',
+          mediaType: att.mediaType || att.mimeType,
+          content: att.content,
+        }))
+      : [];
+
+    const attachments = [...attachmentsFromMeta, ...attachmentsFromParts];
 
     const attachmentsText = attachments
       .map((att: any) => {
@@ -224,14 +269,14 @@ export async function POST(req: Request) {
       .filter(Boolean)
       .join('\n\n');
 
-    const combined = attachmentsText ? `${baseText}\n\n${attachmentsText}` : baseText;
+    const combined = [visibleText, attachmentsText].filter(Boolean).join('\n\n');
 
     return {
       id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
       role: ['assistant', 'user', 'system', 'tool'].includes(m.role) ? m.role : 'user',
       content: combined,
       parts: [{ type: 'text' as const, text: combined }],
-      metadata: m.metadata,
+      metadata: { ...(m.metadata || {}), attachments, hiddenTexts },
     };
   });
 
@@ -264,7 +309,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const systemPrompt = await ensurePrompt();
+  const systemPrompt = await resolveSystemPrompt(userId);
 
   const lastUserMessage = normalizedMessages[normalizedMessages.length - 1];
   const lastText =
@@ -288,8 +333,25 @@ export async function POST(req: Request) {
     ],
   }));
 
+  const messagesWithHidden: UIMessage[] = [];
+  (normalizedMessages as UIMessage[]).forEach((msg) => {
+    const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
+      ? (msg as any).metadata.hiddenTexts
+      : [];
+
+    hiddenTexts.forEach((hidden, idx) => {
+      messagesWithHidden.push({
+        id: `${msg.id}-hidden-${idx}`,
+        role: 'system',
+        parts: [{ type: 'text' as const, text: `Скрытый контент из вложений пользователя:\n${hidden}` }],
+      } as UIMessage);
+    });
+
+    messagesWithHidden.push(msg);
+  });
+
   const extendedMessages: UIMessage[] = [
-    ...(normalizedMessages as UIMessage[]),
+    ...messagesWithHidden,
     ...supplementalMessages,
   ];
 
