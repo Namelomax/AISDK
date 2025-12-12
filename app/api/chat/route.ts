@@ -23,7 +23,7 @@ const openrouter = createOpenRouter({
   },
 });
 
-const model = openrouter.chat('nvidia/nemotron-nano-12b-v2-vl:free');
+const model = openrouter.chat('amazon/nova-2-lite-v1:free');
 
 
 let cachedPrompt: string | null = null;
