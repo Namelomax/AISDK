@@ -28,6 +28,12 @@ const model = openrouter.chat('nvidia/nemotron-nano-12b-v2-vl:free');
 
 let cachedPrompt: string | null = null;
 
+function buildSystemPrompt(userPrompt: string): string {
+  const trimmed = (userPrompt ?? '').trim();
+  if (trimmed) return trimmed;
+  return 'Ты — ассистент. Пользовательский системный промт не задан: уточни вводные и следуй дальнейшим указаниям пользователя.';
+}
+
 async function resolveSystemPrompt(userId?: string | null): Promise<string> {
   // Prefer the user's selected prompt when available
   if (userId) {
@@ -194,8 +200,7 @@ ${doc.content}`,
       model,
       tools,
       messages: convertToModelMessages(extendedMessages),
-    
-      system: systemPrompt + '\nТы — ассистент, который формулирует краткий и понятный ответ на основе результатов поиска.',
+      system: systemPrompt,
     });
 }
 
@@ -306,7 +311,6 @@ export async function POST(req: Request) {
     };
   });
 
-  // Enrich hiddenTexts with PDF extraction on the server side
   for (const msg of normalizedMessages) {
     const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
     const pdfs = atts.filter((a) => a?.mediaType === 'application/pdf');
@@ -352,7 +356,14 @@ export async function POST(req: Request) {
     }
   }
 
-  const systemPrompt = await resolveSystemPrompt(userId);
+  const userPrompt = await resolveSystemPrompt(userId);
+  const systemPrompt = buildSystemPrompt(userPrompt);
+
+  console.log('System prompt applied:', {
+    userId: userId || 'anon',
+    length: systemPrompt.length,
+    preview: systemPrompt.slice(0, 160),
+  });
 
   const lastUserMessage = normalizedMessages[normalizedMessages.length - 1];
   const lastText =
@@ -361,9 +372,7 @@ export async function POST(req: Request) {
     '';
   const linkedUrls = extractUrls(lastText);
   const baseTools = undefined;
-  const urlContextHint = linkedUrls.length
-    ? `\nДоступны ссылки пользователя (до 20) для анализа: ${linkedUrls.join(', ')}.`
-    : '';
+  const urlContextHint = '';
   const resolvedLinkContexts = await resolveUrlContexts(linkedUrls);
   const supplementalMessages: UIMessage[] = resolvedLinkContexts.map((doc) => ({
     id: crypto.randomUUID(),
@@ -398,26 +407,9 @@ export async function POST(req: Request) {
     ...supplementalMessages,
   ];
 
-  // Определяем этап диалога
-  function determineConversationStage(msgs: any[]): ConversationStage {
-    const userMessages = msgs.filter((m) => m.role === 'user');
-    const count = userMessages.length;
-
-    if (count === 1) return 'start';
-    if (count <= 3) return 'general_info';
-    if (count <= 6) return 'process_overview';
-    if (count <= 10) return 'step_details';
-    if (count <= 15) return 'scenario_analysis';
-    return 'completion_ready';
-  }
-
-  const conversationStage = determineConversationStage(normalizedMessages);
-
-  console.log('Conversation stage:', conversationStage);
   console.log('🔍 Debug Info:', {
     totalMessages: normalizedMessages.length,
     lastUserMessage: lastText.substring(0, 150),
-    conversationStage,
   });
 
   // If userId provided, save or update conversation in background.
@@ -461,30 +453,16 @@ export async function POST(req: Request) {
 
   // Определяем намерение пользователя
   let intentType: 'chat' | 'document' | 'search' | 'generate_regulation' | 'casual' = 'chat';
-  const lowered = lastText.toLowerCase();
-  const strongRegulationRequest = lowered.includes('регламент') && (
-    lowered.includes('сформ') ||
-    lowered.includes('вывед') ||
-    lowered.includes('подготов') ||
-    lowered.includes('сдел') ||
-    lowered.includes('оформ') ||
-    lowered.includes('созд')
-  );
-
-  if (strongRegulationRequest) {
-    intentType = 'generate_regulation';
-  } else {
-    try {
-      const { object: intentObj } = await (await import('ai')).generateObject({
-        model,
-        system: systemPrompt,
-        schema: z.object({
-          type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
-        }),
-        prompt: `
+  try {
+    const { object: intentObj } = await (await import('ai')).generateObject({
+      model,
+     // system: systemPrompt,
+      schema: z.object({
+        type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
+      }),
+      prompt: `
 Ты — классификатор пользовательских сообщений.
 
-Этап диалога: ${conversationStage}
 Сообщение пользователя:
 """
 ${lastText}
@@ -493,11 +471,10 @@ ${lastText}
 Верни ТОЛЬКО JSON формата {"type":"<одно из значений>"} без каких-либо пояснений, текста или Markdown. Никаких обоснований.
 Варианты type: generate_regulation, document, search, chat, casual.
 `,
-      });
-      intentType = intentObj.type;
-    } catch (err) {
-      console.error('Intent classification failed, defaulting to chat:', err);
-    }
+    });
+    intentType = intentObj.type;
+  } catch (err) {
+    console.error('Intent classification failed, defaulting to chat:', err);
   }
 
   const intent = { type: intentType };
@@ -506,8 +483,9 @@ ${lastText}
   if (intent.type === 'document' && userMessageCount <= 1) {
     intent.type = 'chat';
   }
-  // Если документ ещё не на финальной стадии, не показываем заготовки — продолжаем как чат
-  if (intent.type === 'document' && conversationStage !== 'completion_ready') {
+
+  // Не теряем системный промт на "casual" — ведём как обычный чат
+  if (intent.type === 'casual') {
     intent.type = 'chat';
   }
 
@@ -550,41 +528,6 @@ ${lastText}
   }
 
   if (intent.type === 'document') {
-    if (conversationStage === 'completion_ready') {
-      const stream = createUIMessageStream({
-        originalMessages: normalizedMessages,
-        execute: async ({ writer }) => {
-          try {
-            await generateFinalRegulation(normalizedMessages, systemPrompt, writer);
-          } catch (error) {
-            console.error('Document intent -> regulation error:', error);
-            writer.write({ type: 'text-start', id: 'doc-error' });
-            writer.write({
-              type: 'text-delta',
-              id: 'doc-error',
-              delta: 'Не удалось сформировать регламент. Попробуйте ещё раз чуть позже.',
-            });
-            writer.write({ type: 'text-end', id: 'doc-error' });
-          }
-        },
-        onFinish: async ({ messages: finished }) => {
-          if (userId) {
-            try {
-              if (conversationId) {
-                await updateConversation(conversationId, finished);
-              } else {
-                await saveConversation(userId, finished);
-              }
-            } catch (e) {
-              console.error('document->regulation persistence failed', e);
-            }
-          }
-        }
-      });
-      const readable = stream.pipeThrough(new JsonToSseTransformStream());
-      return wrapReadableWithSessionSave(readable, userId);
-    }
-
     const stream = createUIMessageStream({
       originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
@@ -593,7 +536,7 @@ ${lastText}
         writer.write({ type: 'data-finish', data: null });
 
         const holdId = `doc-hold-${crypto.randomUUID()}`;
-        const guidance = getDocumentStageGuidance(conversationStage as ConversationStage);
+        const guidance = getDocumentGuidance();
 
         writer.write({ type: 'text-start', id: holdId });
         writer.write({ type: 'text-delta', id: holdId, delta: ` ${guidance.heading}\n\n${guidance.actions}` });
@@ -638,44 +581,12 @@ ${lastText}
     return wrapResponseWithSessionSave(resp, userId);
   }
 
-  if (intent.type === 'casual') {
-    const stream = streamText({
-      model,
-      tools: baseTools,
-      messages: convertToModelMessages(extendedMessages),
-      system:
-        systemPrompt +
-          urlContextHint +
-        `
-Ты — дружелюбный ассистент. Отвечай просто и понятно. Если есть дополнительная информация, используй её.
-`,
-    });
-    const resp = stream.toUIMessageStreamResponse({
-      originalMessages: normalizedMessages,
-      onFinish: async ({ messages: finished }) => {
-        if (userId) {
-          try {
-            if (conversationId) {
-              await updateConversation(conversationId, finished);
-            } else {
-              await saveConversation(userId, finished);
-            }
-          } catch (e) {
-            console.error('casual onFinish persistence failed', e);
-          }
-        }
-      }
-    });
-    return wrapResponseWithSessionSave(resp, userId);
-  }
-
   // Основной диалог
-  const stageSpecificPrompt = getStageSpecificPrompt(conversationStage);
   const stream = streamText({
     model,
     tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
-    system: systemPrompt + stageSpecificPrompt + urlContextHint,
+    system: systemPrompt,
   });
   const resp = stream.toUIMessageStreamResponse({
     originalMessages: normalizedMessages,
@@ -744,118 +655,10 @@ function wrapResponseWithSessionSave(resp: Response, userId?: string | null) {
   return new Response(wrapped, { status: resp.status, headers });
 }
 
-type ConversationStage = 
-  | 'start' 
-  | 'general_info' 
-  | 'process_overview' 
-  | 'step_details' 
-  | 'scenario_analysis' 
-  | 'completion_ready';
-
-function getStageSpecificPrompt(stage: string): string {
-  const prompts: Record<ConversationStage, string> = {
-    start: `
-СЕЙЧАС: ЭТАП 1 - СТАРТ И ОБЩИЕ ПОЛОЖЕНИЯ
-Твоя задача: 
-- Поприветствовать пользователя и представиться
-- Собрать общую информацию о компании, должности, процессе
-- Попросить загрузить документы если есть
-- Начать сбор информации для Раздела 1 "Общие положения"
-
-ВАЖНО: Не переходи к следующим этапам пока не соберешь базовую информацию!
-`,
-    general_info: `
-СЕЙЧАС: ЭТАП 1 - ПРОДОЛЖЕНИЕ СБОРА ОБЩЕЙ ИНФОРМАЦИИ
-Твоя задача:
-- Уточнить детали компании и процесса
-- Проанализировать загруженные документы если есть
-- Собрать информацию для Раздела 1 и начальных пунктов Раздела 2
-- Выяснить назначение регламента, термины, используемые документы
-
-Продолжай задавать уточняющие вопросы!
-`,
-    process_overview: `
-СЕЙЧАС: ЭТАП 2 - ОБЩЕЕ ОПИСАНИЕ ПРОЦЕССА
-Твоя задача:
-- Собрать информацию о владельце процесса
-- Определить цель процесса и ценный конечный продукт
-- Выяснить границы процесса (начало/окончание)
-- Определить участников процесса и их функции
-
-Фокус на Разделе 2 целевой структуры!
-`,
-    step_details: `
-СЕЙЧАС: ЭТАП 3 - ДЕТАЛЬНОЕ ОПИСАНИЕ ШАГОВ
-Твоя задача:
-- Детально описать каждый шаг процесса
-- Выяснить для каждого шага: исполнитель, продукт, смежник, требования
-- Собрать информацию о средствах, инструментах, порядке действий
-- Уточнить количественные характеристики
-
-Фокус на Разделе 3 целевой структуры!
-`,
-    scenario_analysis: `
-СЕЙЧАС: ЭТАП 3 - АНАЛИЗ СЦЕНАРИЕВ ВЫПОЛНЕНИЯ
-Твоя задача:
-- Выяснить альтернативные сценарии выполнения
-- Определить условия ветвления и обработки исключений
-- Уточнить параллельные и циклические сценарии если есть
-- Завершить описание всех шагов процесса
-
-Завершай сбор информации для Раздела 3!
-`,
-    completion_ready: `
-СЕЙЧАС: ЗАВЕРШЕНИЕ СБОРА ИНФОРМАЦИИ
-Твоя задача:
-- Собрать информацию по управлению процессом (Раздел 4)
-- Уточнить показатели эффективности, мониторинг, ответственность
-- ПРЕДЛОЖИТЬ пользователю сформировать финальный регламент
-- Спросить: "Кажется, мы собрали всю информацию. Хотите, чтобы я сформировал финальный регламент?"
-
-ГОТОВЬСЯ К ФОРМИРОВАНИЮ РЕГЛАМЕНТА!
-`
-  };
-
-  return prompts[stage as ConversationStage] || '';
-}
-
-function getDocumentStageGuidance(stage: ConversationStage): { heading: string; actions: string } {
-  const map: Record<ConversationStage, { heading: string; actions: string }> = {
-    start: {
-      heading: 'Начнём с базовых сведений, чтобы собрать раздел «Общие положения».',
-      actions:
-        '- Коротко опишите компанию и сферу деятельности.\n- Как называется процесс, для которого нужен регламент?\n- Зачем он нужен и для кого (отдел, роль)?',
-    },
-    general_info: {
-      heading: 'Соберём детали для раздела 1: назначения, документы, термины.',
-      actions:
-        '- Уточните цель процесса и область применения регламента.\n- Перечислите связанные документы/инструкции.\n- Дайте определения ключевых терминов или ролей.',
-    },
-    process_overview: {
-      heading: 'Теперь нужен общий контур процесса (раздел 2).',
-      actions:
-        '- Кто владелец процесса и какие участники задействованы?\n- Какой продукт должен получиться на выходе и кто его потребитель?\n- Где начинается и заканчивается процесс?',
-    },
-    step_details: {
-      heading: 'Пора расписать последовательность шагов (раздел 3).',
-      actions:
-        '- Перечислите шаги по порядку.\n- Для каждого шага назовите исполнителя, вход, выход и инструменты.\n- Укажите требования или ограничения, если они есть.',
-    },
-    scenario_analysis: {
-      heading: 'Нужно описать альтернативные сценарии и исключения.',
-      actions:
-        '- Есть ли параллельные ветки, нестандартные ситуации или эскалации?\n- Кто принимает решения при отклонениях?\n- Какие условия запускают альтернативные шаги?',
-    },
-    completion_ready: {
-      heading: 'Все данные почти собраны. Скажите «Сформируй регламент», чтобы выполнить финальный проход.',
-      actions:
-        '- Могу уже выпускать финальный документ, если подтвердите.\n- При необходимости уточните ещё KPI, мониторинг или ответственность.',
-    },
-  };
-
-  return map[stage] ?? {
+function getDocumentGuidance(): { heading: string; actions: string } {
+  return {
     heading: 'Нужно ещё немного информации, прежде чем формировать документ.',
-    actions: '- Добавьте любую недостающую деталь процесса или отправьте файлы с пояснениями.',
+    actions: '- Опишите цель процесса и роль регламента.\n- Перечислите участников, входы и выходы.\n- Пришлите файлы или текст с деталями, если они есть.',
   };
 }
 
@@ -872,42 +675,14 @@ async function generateFinalRegulation(
     })
     .join('\n');
 
-  const directive = `На основе всей истории диалога ниже сформируй итоговый регламент. Используй ТОЛЬКО подтверждённые факты из переписки.
-
-Структура обязательна и должна быть ровно такой (Markdown). После каждого заголовка раздела оставляй пустую строку, а подпункты не начинай с табов или четырёх пробелов:
-
-# Название регламента
-
-**1. Общие положения**
-
-1.1. ... (и так далее)
-
-**2. Общее описание процесса**
-
-2.1. ...
-
-**3. Детальное описание шагов процесса**
-
-3.1. ...
-
-**4. Управление процессом**
-
-4.1. ...
-
-Правила форматирования:
-- Всегда добавляй пустую строку между строкой вида «**N. …**» и пунктами «N.1, N.2 …».
-- Не используй отступы из четырёх пробелов перед нумерованными пунктами.
-- Если данных нет — пиши «*Информация не предоставлена в диалоге.*».
-- Никаких пояснений вне структуры.
-- Никаких кодовых блоков и тройных кавычек \"\"\", ни \"\"\"markdown\"\"\".
-- Сразу выводи чистый Markdown без ограждений.
+  const directive = `Сформируй итоговый регламент на основе всей истории диалога ниже. Используй ТОЛЬКО подтверждённые факты из переписки. Никаких пояснений вне регламента. Если данных нет — пиши "*Информация не предоставлена в диалоге.*". Никаких кодовых блоков и тройных кавычек.
 
 История диалога:
 ${conversationContext}`;
 
   const stream = await streamText({
     model,
-    system: systemPrompt,
+    //system: systemPrompt,
     messages: [
       {
         role: 'user',
