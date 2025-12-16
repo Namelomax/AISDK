@@ -23,18 +23,37 @@ const openrouter = createOpenRouter({
   },
 });
 
-const model = openrouter.chat('amazon/nova-2-lite-v1:free');
+const model = openrouter.chat('nvidia/nemotron-3-nano-30b-a3b:free');
 
 
 let cachedPrompt: string | null = null;
 
-function buildSystemPrompt(userPrompt: string): string {
+function buildSystemPrompt(userPrompt: string, hiddenDocsContext?: string): string {
   const trimmed = (userPrompt ?? '').trim();
-  if (trimmed) return trimmed;
-  return 'Ты — ассистент. Пользовательский системный промт не задан: уточни вводные и следуй дальнейшим указаниям пользователя.';
+  const base = trimmed || 'Ты — ассистент. Пользовательский системный промт не задан: уточни вводные и следуй дальнейшим указаниям пользователя.';
+  if (!hiddenDocsContext) return base;
+
+  return `${base}
+
+===== ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ =====
+${hiddenDocsContext}
+
+Используй факты из этих материалов в ответах. Если информация из вложений противоречит предположениям модели, приоритет всегда за документами. Ссылайся на документ по названию или номеру и не игнорируй эту секцию.
+===== КОНЕЦ ВЛОЖЕНИЙ =====`;
 }
 
-async function resolveSystemPrompt(userId?: string | null): Promise<string> {
+async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: string | null): Promise<string> {
+  // 1. Try explicit prompt ID from client (for anon or override)
+  if (selectedPromptId) {
+    try {
+      const prompt = await getPromptById(selectedPromptId);
+      if (prompt?.content) return prompt.content;
+      console.warn('Selected prompt not found or empty:', selectedPromptId);
+    } catch (error) {
+      console.error('Failed to load selected prompt:', error);
+    }
+  }
+
   // Prefer the user's selected prompt when available
   if (userId) {
     try {
@@ -51,6 +70,43 @@ async function resolveSystemPrompt(userId?: string | null): Promise<string> {
   // Fallback to cached default prompt
   if (!cachedPrompt) cachedPrompt = await getPrompt();
   return cachedPrompt;
+}
+
+function isExplicitRegulationRequest(text?: string | null): boolean {
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  const keywords = [
+    'сформируй регламент',
+    'создай регламент',
+    'подготовь регламент',
+    'финальный регламент',
+    'итоговый регламент',
+    'сделай регламент',
+    'построй регламент',
+    'регламент готов',
+    'сформировать регламент',
+    'финальную версию регламента',
+    'заверши регламент',
+    'сформируем регламент',
+    'составим регламент',
+    'напишем регламент',
+    'давай регламент',
+    'пора формировать регламент',
+  ];
+
+  if (keywords.some((phrase) => normalized.includes(phrase))) {
+    return true;
+  }
+
+  const regexes = [
+    /(сформиру(й|йте|ем|ть).*(финал|регламент))/i,
+    /(подготов(ь|ьте|им|ить).*(регламент|финал))/i,
+    /(созда(й|йте|дим|ть).*(регламент))/i,
+    /(состав(ь|ьте|им|ить).*(регламент))/i,
+    /(давай.*(сформируем|составим|напишем|сделаем).*(регламент))/i,
+  ];
+
+  return regexes.some((re) => re.test(text));
 }
 
 const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi;
@@ -80,6 +136,77 @@ async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
     return text || null;
   } catch (error) {
     console.error('Failed to parse PDF attachment:', error);
+    return null;
+  }
+}
+
+async function extractDocxTextFromAttachment(att: any): Promise<string | null> {
+  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return null;
+  const buf = dataUrlToBuffer(att.url || att.data);
+  if (!buf) return null;
+  try {
+    const mammoth = await import('mammoth');
+    const result = await mammoth.extractRawText({ buffer: buf });
+    return result.value.trim() || null;
+  } catch (error) {
+    console.error('Failed to parse DOCX attachment:', error);
+    return null;
+  }
+}
+
+async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
+  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return null;
+  const buf = dataUrlToBuffer(att.url || att.data);
+  if (!buf) return null;
+  try {
+    const XLSX = await import('xlsx');
+    const workbook = XLSX.read(buf, { type: 'buffer' });
+    let text = '';
+    workbook.SheetNames.forEach(sheetName => {
+      const sheet = workbook.Sheets[sheetName];
+      text += `Sheet: ${sheetName}\n`;
+      text += XLSX.utils.sheet_to_txt(sheet);
+      text += '\n\n';
+    });
+    return text.trim() || null;
+  } catch (error) {
+    console.error('Failed to parse XLSX attachment:', error);
+    return null;
+  }
+}
+
+async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
+  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return null;
+  const buf = dataUrlToBuffer(att.url || att.data);
+  if (!buf) return null;
+  try {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(buf);
+    const slideFiles = Object.keys(zip.files).filter(name => name.match(/^ppt\/slides\/slide\d+\.xml$/));
+    
+    // Sort slides by number
+    slideFiles.sort((a, b) => {
+      const numA = parseInt(a.match(/slide(\d+)\.xml$/)?.[1] || '0');
+      const numB = parseInt(b.match(/slide(\d+)\.xml$/)?.[1] || '0');
+      return numA - numB;
+    });
+
+    let text = '';
+    for (const fileName of slideFiles) {
+      const content = await zip.file(fileName)?.async('string');
+      if (content) {
+        // Simple regex to extract text from <a:t> tags
+        const slideText = content.match(/<a:t>(.*?)<\/a:t>/g)
+          ?.map(t => t.replace(/<\/?a:t>/g, ''))
+          .join(' ') || '';
+        if (slideText.trim()) {
+          text += `Slide ${fileName.match(/slide(\d+)\.xml$/)?.[1]}:\n${slideText}\n\n`;
+        }
+      }
+    }
+    return text.trim() || null;
+  } catch (error) {
+    console.error('Failed to parse PPTX attachment:', error);
     return null;
   }
 }
@@ -196,22 +323,23 @@ ${doc.content}`,
     ...supplementalMessages,
   ];
 
-    return streamText({
-      model,
-      tools,
-      messages: convertToModelMessages(extendedMessages),
-      system: systemPrompt,
-    });
+  return streamText({
+    model,
+    tools,
+    messages: convertToModelMessages(extendedMessages),
+    system: systemPrompt,
+  });
 }
 
 // Основной POST
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  let { messages, newSystemPrompt, userId } = body as any;
+  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent } = body as any;
   let conversationId: string | null = null;
   try {
     const url = new URL(req.url);
     conversationId = body.conversationId || url.searchParams.get('conversationId');
+    if (!selectedPromptId) selectedPromptId = url.searchParams.get('selectedPromptId');
   } catch {}
   if (!Array.isArray(messages)) {
     messages = [];
@@ -313,16 +441,31 @@ export async function POST(req: Request) {
 
   for (const msg of normalizedMessages) {
     const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
+    
     const pdfs = atts.filter((a) => a?.mediaType === 'application/pdf');
-    if (!pdfs.length) continue;
+    const docxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const xlsxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const pptxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+
+    if (!pdfs.length && !docxs.length && !xlsxs.length && !pptxs.length) continue;
 
     const pdfTexts = await Promise.all(pdfs.map(extractPdfTextFromAttachment));
-    const extracted = pdfTexts.filter((t): t is string => Boolean(t && t.trim()));
-    if (extracted.length) {
+    const docxTexts = await Promise.all(docxs.map(extractDocxTextFromAttachment));
+    const xlsxTexts = await Promise.all(xlsxs.map(extractXlsxTextFromAttachment));
+    const pptxTexts = await Promise.all(pptxs.map(extractPptxTextFromAttachment));
+
+    const allTexts = [
+      ...pdfTexts,
+      ...docxTexts,
+      ...xlsxTexts,
+      ...pptxTexts
+    ].filter((t): t is string => Boolean(t && t.trim()));
+
+    if (allTexts.length) {
       msg.metadata = {
         ...(msg.metadata || {}),
         attachments: atts,
-        hiddenTexts: [...(msg.metadata?.hiddenTexts || []), ...extracted],
+        hiddenTexts: [...(msg.metadata?.hiddenTexts || []), ...allTexts],
       };
     }
   }
@@ -356,14 +499,8 @@ export async function POST(req: Request) {
     }
   }
 
-  const userPrompt = await resolveSystemPrompt(userId);
-  const systemPrompt = buildSystemPrompt(userPrompt);
-
-  console.log('System prompt applied:', {
-    userId: userId || 'anon',
-    length: systemPrompt.length,
-    preview: systemPrompt.slice(0, 160),
-  });
+  const userPrompt = await resolveSystemPrompt(userId, selectedPromptId);
+  console.log('Resolved user prompt:', userPrompt ? userPrompt.slice(0, 50) : 'null', 'for userId:', userId, 'selectedPromptId:', selectedPromptId);
 
   const lastUserMessage = normalizedMessages[normalizedMessages.length - 1];
   const lastText =
@@ -386,21 +523,40 @@ export async function POST(req: Request) {
   }));
 
   const messagesWithHidden: UIMessage[] = [];
+  const hiddenDocEntries: string[] = [];
   (normalizedMessages as UIMessage[]).forEach((msg) => {
     const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
       ? (msg as any).metadata.hiddenTexts
       : [];
+    const attachmentsMeta: any[] = Array.isArray((msg as any)?.metadata?.attachments)
+      ? (msg as any).metadata.attachments
+      : [];
 
     hiddenTexts.forEach((hidden, idx) => {
+      const cleaned = String(hidden ?? '').trim();
+      if (!cleaned) return;
+      const attName = attachmentsMeta[idx]?.name || attachmentsMeta[idx]?.filename;
+      const label = attName
+        ? `Документ "${attName}"`
+        : `Документ ${hiddenDocEntries.length + 1}`;
+      const snippet = cleaned.length > 1200 ? `${cleaned.slice(0, 1200)} …` : cleaned;
+      hiddenDocEntries.push(`${label}:\n${snippet}`);
+
       messagesWithHidden.push({
         id: `${msg.id}-hidden-${idx}`,
         role: 'system',
-        parts: [{ type: 'text' as const, text: `Скрытый контент из вложений пользователя:\n${hidden}` }],
+        parts: [{ type: 'text' as const, text: `Скрытый контент из вложений пользователя:\n${cleaned}` }],
       } as UIMessage);
     });
 
     messagesWithHidden.push(msg);
   });
+
+  const hiddenDocsContext = hiddenDocEntries.length
+    ? hiddenDocEntries.join('\n\n').slice(0, MAX_DOC_CONTEXT_CHARS)
+    : '';
+
+  const systemPrompt = buildSystemPrompt(userPrompt, hiddenDocsContext);
 
   const extendedMessages: UIMessage[] = [
     ...messagesWithHidden,
@@ -433,14 +589,15 @@ export async function POST(req: Request) {
         if (convId) {
           try {
             const mod = await import('@/lib/getPromt');
-            void mod.updateConversation(convId, msgsToSave);
+            void mod.updateConversation(convId, msgsToSave, documentContent);
           } catch (e) {
             console.error('Failed to update conversation:', e);
           }
         } else {
           try {
             const mod = await import('@/lib/getPromt');
-            void mod.saveConversation(userId, msgsToSave);
+            const created = await mod.saveConversation(userId, msgsToSave, documentContent);
+            conversationId = created.id; // Capture the new ID
           } catch (e) {
             console.error('Failed to create conversation:', e);
           }
@@ -453,23 +610,40 @@ export async function POST(req: Request) {
 
   // Определяем намерение пользователя
   let intentType: 'chat' | 'document' | 'search' | 'generate_regulation' | 'casual' = 'chat';
+  
+  // Context for intent classification (last 6 messages)
+  const intentContext = normalizedMessages
+    .slice(-6)
+    .map((msg) => `${msg.role}: ${msg.content}`)
+    .join('\n');
+
   try {
     const { object: intentObj } = await (await import('ai')).generateObject({
       model,
-     // system: systemPrompt,
       schema: z.object({
         type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
       }),
       prompt: `
-Ты — классификатор пользовательских сообщений.
+Ты — умный классификатор намерений в диалоге. Твоя задача — определить следующий шаг.
 
-Сообщение пользователя:
+Контекст диалога (последние сообщения):
+"""
+${intentContext}
+"""
+
+Последнее сообщение пользователя:
 """
 ${lastText}
 """
 
-Верни ТОЛЬКО JSON формата {"type":"<одно из значений>"} без каких-либо пояснений, текста или Markdown. Никаких обоснований.
-Варианты type: generate_regulation, document, search, chat, casual.
+Инструкции:
+1. Если пользователь явно просит создать, сформировать, сгенерировать регламент или документ -> "generate_regulation".
+2. Если из контекста видно, что сбор информации завершен (агент предложил сформировать документ, и пользователь согласился, например "да", "давай", "хорошо") -> "generate_regulation".
+3. Если пользователь задает вопрос, требующий поиска в интернете -> "search".
+4. Если пользователь просто общается или отвечает на вопросы -> "chat".
+5. Если пользователь загрузил документ и просит его проанализировать -> "document".
+
+Верни ТОЛЬКО JSON формата {"type":"<одно из значений>"}.
 `,
     });
     intentType = intentObj.type;
@@ -489,6 +663,27 @@ ${lastText}
     intent.type = 'chat';
   }
 
+  // Removed explicit blocking logic to allow smart detection
+  // const explicitRegulationRequest = isExplicitRegulationRequest(lastText);
+  // if (intent.type === 'generate_regulation' && !explicitRegulationRequest) { ... }
+
+  let systemAddendum = '';
+  if (intent.type === 'document') {
+    const guidance = getDocumentGuidance();
+    systemAddendum = `\n# Инструкция: недостаточно данных\n${guidance.heading}\n${guidance.actions}\n\nНе начинай формирование регламента. Сошлись на загруженных материалах, объясни, какие данные ещё нужны, и задай не более одного уточняющего вопроса.`;
+    intent.type = 'chat';
+  }
+
+  const effectiveSystemPrompt = systemAddendum
+    ? `${systemPrompt}\n${systemAddendum}`
+    : systemPrompt;
+
+  console.log('System prompt applied:', {
+    userId: userId || 'anon',
+    length: effectiveSystemPrompt.length,
+    preview: effectiveSystemPrompt.slice(0, 160),
+  });
+
   console.log('Detected intent:', intent.type);
 
   // === Роутинг по агентам ===
@@ -497,7 +692,7 @@ ${lastText}
       originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
         try {
-          await generateFinalRegulation(normalizedMessages, systemPrompt, writer);
+          await generateFinalRegulation(normalizedMessages, systemPrompt, writer, documentContent, { userId, conversationId });
         } catch (error) {
           console.error('Regulation generation error:', error);
           writer.write({ type: 'text-start', id: 'error' });
@@ -527,41 +722,8 @@ ${lastText}
     return wrapReadableWithSessionSave(readable, userId);
   }
 
-  if (intent.type === 'document') {
-    const stream = createUIMessageStream({
-      originalMessages: normalizedMessages,
-      execute: async ({ writer }) => {
-        writer.write({ type: 'data-clear', data: null });
-        writer.write({ type: 'data-title', data: '' });
-        writer.write({ type: 'data-finish', data: null });
-
-        const holdId = `doc-hold-${crypto.randomUUID()}`;
-        const guidance = getDocumentGuidance();
-
-        writer.write({ type: 'text-start', id: holdId });
-        writer.write({ type: 'text-delta', id: holdId, delta: ` ${guidance.heading}\n\n${guidance.actions}` });
-        writer.write({ type: 'text-end', id: holdId });
-      },
-      onFinish: async ({ messages: finished }) => {
-        if (userId) {
-          try {
-            if (conversationId) {
-              await updateConversation(conversationId, finished);
-            } else {
-              await saveConversation(userId, finished);
-            }
-          } catch (e) {
-            console.error('document persistence failed', e);
-          }
-        }
-      }
-    });
-    const readable = stream.pipeThrough(new JsonToSseTransformStream());
-    return wrapReadableWithSessionSave(readable, userId);
-  }
-
   if (intent.type === 'search') {
-    const stream = await serpAgent(normalizedMessages, systemPrompt, baseTools);
+    const stream = await serpAgent(normalizedMessages, effectiveSystemPrompt, baseTools);
     const resp = stream.toUIMessageStreamResponse({
       originalMessages: normalizedMessages,
       onFinish: async ({ messages: finished }) => {
@@ -586,7 +748,7 @@ ${lastText}
     model,
     tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
-    system: systemPrompt,
+    system: effectiveSystemPrompt,
   });
   const resp = stream.toUIMessageStreamResponse({
     originalMessages: normalizedMessages,
@@ -666,7 +828,9 @@ function getDocumentGuidance(): { heading: string; actions: string } {
 async function generateFinalRegulation(
   messages: any[], 
   systemPrompt: string,
-  dataStream: any
+  dataStream: any,
+  existingDocument?: string,
+  saveContext?: { userId?: string, conversationId?: string | null }
 ) {
   const conversationContext = messages
     .map((msg) => {
@@ -675,9 +839,24 @@ async function generateFinalRegulation(
     })
     .join('\n');
 
-  const directive = `Сформируй итоговый регламент на основе всей истории диалога ниже. Используй ТОЛЬКО подтверждённые факты из переписки. Никаких пояснений вне регламента. Если данных нет — пиши "*Информация не предоставлена в диалоге.*". Никаких кодовых блоков и тройных кавычек.
+  let directive = `Сформируй итоговый регламент на основе всей истории диалога ниже. 
+Первой строкой напиши заголовок документа, начиная с символа # (например: "# Регламент проведения...").
+Используй ТОЛЬКО подтверждённые факты из переписки. 
+Пиши СТРОГО на русском языке. Избегай иностранных слов (например, используй "Организатор" вместо "Organisateur").
+Никаких пояснений вне регламента. 
+Если данных нет — пиши "*Информация не предоставлена в диалоге.*". 
+Никаких кодовых блоков и тройных кавычек.`;
 
-История диалога:
+  if (existingDocument && existingDocument.trim().length > 20) {
+    directive += `\n\nТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (которую нужно исправить/дополнить):
+"""
+${existingDocument}
+"""
+ВНИМАНИЕ: Пользователь хочет внести изменения в этот документ. Верни ПОЛНЫЙ обновленный текст документа, а не только исправленную часть.
+`;
+  }
+
+  directive += `\n\nИстория диалога:
 ${conversationContext}`;
 
   const stream = await streamText({
@@ -731,15 +910,24 @@ ${conversationContext}`;
       const restAfterHeading = headingBuffer.slice(newlineIdx + 1);
 
       if (!publishedFinalTitle) {
-        const match = headingLine.match(/^#\s*(.+)$/);
-        if (match) {
-          finalTitle = match[1].trim() || finalTitle;
+        // Пытаемся найти заголовок: # Заголовок или **Заголовок**
+        let titleMatch = headingLine.match(/^#\s*(.+)$/);
+        if (!titleMatch) {
+          const boldMatch = headingLine.match(/^\*\*(.+)\*\*$/);
+          if (boldMatch) titleMatch = boldMatch;
+        }
+
+        if (titleMatch) {
+          finalTitle = titleMatch[1].trim() || finalTitle;
           dataStream.write({ type: 'data-title', data: finalTitle });
           publishedFinalTitle = true;
+          chunk = restAfterHeading; // Заголовок уходит в мету, из текста убираем
+        } else {
+          // Если первая строка не похожа на заголовок, оставляем её в тексте
+          chunk = headingBuffer;
         }
       }
 
-      chunk = restAfterHeading;
       headingBuffer = '';
       headingRemoved = true;
       if (!chunk) {
@@ -768,4 +956,20 @@ ${conversationContext}`;
     delta: `\n\n✅ Регламент "${finalTitle}" сформирован. При необходимости попросите меня внести изменения.`,
   });
   dataStream.write({ type: 'text-end', id: progressId });
+
+  // Save the generated document content
+  if (saveContext?.conversationId) {
+    try {
+      const mod = await import('@/lib/getPromt');
+      // We only update the document content here, messages are updated in onFinish
+      // But wait, onFinish runs AFTER this execute function finishes?
+      // Yes. But onFinish receives `messages` which are the chat messages.
+      // It does NOT receive the document content.
+      // So we must save document content here.
+      // However, updateConversation expects messages. We can pass the current messages.
+      await mod.updateConversation(saveContext.conversationId, messages, fullContent);
+    } catch (e) {
+      console.error('Failed to save generated document:', e);
+    }
+  }
 }

@@ -25,23 +25,10 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
 
-  const handleSystemPromptUpdate = useCallback(async (content: string) => {
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [], newSystemPrompt: content }),
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to update system prompt');
-      }
-
-      console.log('✅ System prompt updated');
-    } catch (err) {
-      console.error('Failed to send prompt to /api/chat:', err);
-    }
+  const handlePromptSelect = useCallback((content: string, prompt: any) => {
+    setSelectedPromptId(prompt?.id ?? null);
   }, []);
 
   // Custom fetch to inject userId and conversationId into every chat request body
@@ -365,6 +352,22 @@ export default function ChatPage() {
     if (!conversation?.id) return;
     setConversationId(conversation.id);
     setMessages(toUIMessages(conversation.messages));
+    
+    // Load document content if available
+    if (conversation.document_content) {
+      setDocument({
+        title: conversation.title || 'Документ', // Or extract title from content if needed
+        content: conversation.document_content,
+        isStreaming: false,
+      });
+    } else {
+      setDocument({
+        title: '',
+        content: '',
+        isStreaming: false,
+      });
+    }
+
     localStorage.setItem('activeConversationId', conversation.id);
   };
 
@@ -417,10 +420,12 @@ export default function ChatPage() {
                 setConversationsList={setConversationsList}
                 setMessages={setMessages}
                 sendMessage={sendMessage}
+                selectedPromptId={selectedPromptId}
+                documentContent={document.content}
               />
               <PromptsManager
                 className="w-full"
-                onPromptSelect={handleSystemPromptUpdate}
+                onPromptSelect={handlePromptSelect}
                 userId={authUser?.id ?? null}
               />
             </div>

@@ -100,8 +100,10 @@ type PromptInputWrapperProps = {
   setConversationId: Dispatch<SetStateAction<string | null>>;
   setConversationsList: Dispatch<SetStateAction<any[]>>;
   setMessages: (messages: any[]) => void;
-  sendMessage: (payload: { text: string; files?: FileUIPart[] }) => void;
+  sendMessage: (payload: any, options?: any) => void;
   className?: string;
+  selectedPromptId?: string | null;
+  documentContent?: string;
 };
 
 export const PromptInputWrapper = ({
@@ -115,6 +117,8 @@ export const PromptInputWrapper = ({
   setMessages,
   sendMessage,
   className,
+  selectedPromptId,
+  documentContent,
 }: PromptInputWrapperProps) => {
   const handleSubmit = async (
     message: PromptInputMessage,
@@ -165,7 +169,12 @@ export const PromptInputWrapper = ({
       files: preparedFiles,
       // pass hidden extracted text for server-side system injection
       ...(extractedHiddenTexts.length ? { metadata: { hiddenTexts: extractedHiddenTexts } } : {}),
-    } as any);
+    } as any, {
+      body: { 
+        selectedPromptId,
+        documentContent: documentContent || undefined 
+      }
+    });
 
     setInput('');
   };

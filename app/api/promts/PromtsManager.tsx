@@ -19,7 +19,7 @@ export function PromptsManager({
   userId,
 }: { 
   className?: string;
-  onPromptSelect: (content: string) => void | Promise<void>;
+  onPromptSelect?: (content: string, prompt: Prompt) => void | Promise<void>;
   userId?: string | null;
 }) {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -101,9 +101,9 @@ export function PromptsManager({
       if (nextSelected) {
         setSelectedId(nextSelected);
         const prompt = list.find(p => p.id === nextSelected);
-        if (prompt) {
+        if (prompt && onPromptSelect) {
           try {
-            await onPromptSelect(prompt.content);
+            await onPromptSelect(prompt.content, prompt);
           } catch (error) {
             console.error('Failed to apply prompt content:', error);
           }
@@ -136,7 +136,9 @@ export function PromptsManager({
     if (!prompt) return;
 
     try {
-      await onPromptSelect(prompt.content);
+      if (onPromptSelect) {
+        await onPromptSelect(prompt.content, prompt);
+      }
     } catch (error) {
       console.error('Failed to apply prompt content:', error);
     }

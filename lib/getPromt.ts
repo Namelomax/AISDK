@@ -89,6 +89,9 @@ DEFINE FIELD messages_raw ON conversations TYPE string;
 -- заголовок (опционально)
 DEFINE FIELD title ON conversations TYPE string;
 
+-- контент документа (опционально)
+DEFINE FIELD document_content ON conversations TYPE string;
+
 DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY;
 
     `);
@@ -185,6 +188,7 @@ export type Conversation = {
   created: string;
   title?: string;
   messages_raw?: string;
+  document_content?: string;
 };
 
 // Create a new user
@@ -242,7 +246,7 @@ export async function getUserPrompts(userId: string): Promise<Prompt[]> {
 }
 
 // Save conversation
-export async function saveConversation(userId: string, messages: any): Promise<Conversation> {
+export async function saveConversation(userId: string, messages: any, documentContent?: string): Promise<Conversation> {
   await connectDB();
   const userRef = userId.startsWith('users:') ? userId : `users:${userId}`;
   // create conversation with user reference
@@ -272,7 +276,13 @@ export async function saveConversation(userId: string, messages: any): Promise<C
     console.log('saveConversation: final DB payload userRef=', userRef, 'messages=[unserializable]');
   }
 
-  const [conv] = await db.create('conversations', { user: userRecord, messages: sanitizedClean, title: "Чат",messages_raw: JSON.stringify(sanitizedClean) });
+  const [conv] = await db.create('conversations', { 
+    user: userRecord, 
+    messages: sanitizedClean, 
+    title: "Чат",
+    messages_raw: JSON.stringify(sanitizedClean),
+    document_content: documentContent || undefined
+  });
   // Create a RecordId for this conversation so further operations use the proper record object
   const convClean = String((conv as any).id).replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', convClean);
@@ -383,13 +393,14 @@ export async function saveConversation(userId: string, messages: any): Promise<C
     messages: storedConv.messages,
     messages_raw: (storedConv as any).messages_raw,
     created: String((storedConv as any).created),
+    document_content: (storedConv as any).document_content,
   };
 }
 
 // Update existing conversation by id
-export async function updateConversation(convId: string, messages: any): Promise<Conversation> {
+export async function updateConversation(conversationId: string, messages: any, documentContent?: string): Promise<Conversation> {
   await connectDB();
-  const clean = convId.replace(/^conversations:/, '');
+  const clean = conversationId.replace(/^conversations:/, '');
   const recordObj = new RecordId('conversations', clean);
   const recordIdString = `conversations:${clean}`;
 
@@ -417,9 +428,21 @@ export async function updateConversation(convId: string, messages: any): Promise
   }
 
   // Attempt merge first using RecordId object for consistency
-  await db.merge(recordObj, { messages: sanitizedClean, messages_raw: JSON.stringify(sanitizedClean) }).catch(async (e: any) => {
+  const updatePayload: any = { 
+    messages: sanitizedClean, 
+    messages_raw: JSON.stringify(sanitizedClean) 
+  };
+  if (documentContent !== undefined) {
+    updatePayload.document_content = documentContent;
+  }
+
+  await db.merge(recordObj, updatePayload).catch(async (e: any) => {
     console.warn('updateConversation: merge failed, falling back to UPDATE SQL', e?.message);
-    await db.query(`UPDATE ${recordIdString} SET messages = $messages, messages_raw = $messages_raw RETURN AFTER;`, { messages: sanitizedClean, messages_raw: JSON.stringify(sanitizedClean) }).catch((ee) => {
+    await db.query(`UPDATE ${recordIdString} SET messages = $messages, messages_raw = $messages_raw${documentContent !== undefined ? ', document_content = $document_content' : ''} RETURN AFTER;`, { 
+      messages: sanitizedClean, 
+      messages_raw: JSON.stringify(sanitizedClean),
+      document_content: documentContent
+    }).catch((ee) => {
       console.error('updateConversation: UPDATE fallback failed', ee);
     });
   });
@@ -475,6 +498,7 @@ export async function updateConversation(convId: string, messages: any): Promise
     messages: storedMessages ?? sanitizedClean,
     messages_raw: String((convData as any).messages_raw ?? JSON.stringify(sanitizedClean)),
     created: String((convData as any).created ?? new Date().toISOString()),
+    document_content: (convData as any).document_content,
   };
 }
 
@@ -582,6 +606,7 @@ export async function getConversations(userId: string): Promise<Conversation[]> 
       messages_raw: r.messages_raw,
       created: String(r.created),
       title: r.title ?? '',
+      document_content: r.document_content,
     };
   });
 }
