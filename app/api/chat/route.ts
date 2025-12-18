@@ -609,7 +609,7 @@ export async function POST(req: Request) {
   }
 
   // Определяем намерение пользователя
-  let intentType: 'chat' | 'document' | 'search' | 'generate_regulation' | 'casual' = 'chat';
+  let intentType: 'chat' | 'generate_regulation' = 'chat';
   
   // Context for intent classification (last 6 messages)
   const intentContext = normalizedMessages
@@ -621,11 +621,28 @@ export async function POST(req: Request) {
     const { object: intentObj } = await (await import('ai')).generateObject({
       model,
       schema: z.object({
-        type: z.enum(['chat', 'document', 'search', 'generate_regulation', 'casual']),
+        type: z.enum(['chat', 'generate_regulation']),
       }),
-      prompt: `
-Ты — умный классификатор намерений в диалоге. Твоя задача — определить следующий шаг.
+      system: `
+Ты — умный классификатор намерений в диалоге. Твоя задача — определить следующий шаг: "chat" (общение, сбор информации, анализ) или "generate_regulation" (формирование финального документа).
 
+Текущая задача ассистента (из системного промта):
+"""
+${userPrompt || 'Нет специфической задачи'}
+"""
+
+Инструкции:
+1. "generate_regulation" выбирай ТОЛЬКО если:
+   - Пользователь ЯВНО просит "сформировать", "создать", "написать" итоговый регламент/документ.
+   - Агент в предыдущем сообщении предложил сформировать документ, и пользователь согласился ("да", "давай", "хорошо").
+2. Во всех остальных случаях выбирай "chat".
+   - Если пользователь загрузил файлы и просит их проанализировать -> "chat".
+   - Если пользователь задает вопросы -> "chat".
+   - Если идет обсуждение деталей -> "chat".
+
+Будь консервативен. Если есть сомнения — выбирай "chat".
+`,
+      prompt: `
 Контекст диалога (последние сообщения):
 """
 ${intentContext}
@@ -636,13 +653,6 @@ ${intentContext}
 ${lastText}
 """
 
-Инструкции:
-1. Если пользователь явно просит создать, сформировать, сгенерировать регламент или документ -> "generate_regulation".
-2. Если из контекста видно, что сбор информации завершен (агент предложил сформировать документ, и пользователь согласился, например "да", "давай", "хорошо") -> "generate_regulation".
-3. Если пользователь задает вопрос, требующий поиска в интернете -> "search".
-4. Если пользователь просто общается или отвечает на вопросы -> "chat".
-5. Если пользователь загрузил документ и просит его проанализировать -> "document".
-
 Верни ТОЛЬКО JSON формата {"type":"<одно из значений>"}.
 `,
     });
@@ -652,31 +662,16 @@ ${lastText}
   }
 
   const intent = { type: intentType };
-  const userMessageCount = normalizedMessages.filter((m) => m.role === 'user').length;
-  // Избегаем автоперехода в document на самом первом сообщении — отвечаем как обычный чат
-  if (intent.type === 'document' && userMessageCount <= 1) {
-    intent.type = 'chat';
-  }
-
-  // Не теряем системный промт на "casual" — ведём как обычный чат
-  if (intent.type === 'casual') {
-    intent.type = 'chat';
-  }
-
+  
   // Removed explicit blocking logic to allow smart detection
   // const explicitRegulationRequest = isExplicitRegulationRequest(lastText);
   // if (intent.type === 'generate_regulation' && !explicitRegulationRequest) { ... }
 
-  let systemAddendum = '';
-  if (intent.type === 'document') {
-    const guidance = getDocumentGuidance();
-    systemAddendum = `\n# Инструкция: недостаточно данных\n${guidance.heading}\n${guidance.actions}\n\nНе начинай формирование регламента. Сошлись на загруженных материалах, объясни, какие данные ещё нужны, и задай не более одного уточняющего вопроса.`;
-    intent.type = 'chat';
-  }
+  // Removed document intent logic that forced "insufficient data" message
+  // let systemAddendum = '';
+  // if (intent.type === 'document') { ... }
 
-  const effectiveSystemPrompt = systemAddendum
-    ? `${systemPrompt}\n${systemAddendum}`
-    : systemPrompt;
+  const effectiveSystemPrompt = systemPrompt;
 
   console.log('System prompt applied:', {
     userId: userId || 'anon',
@@ -692,7 +687,7 @@ ${lastText}
       originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
         try {
-          await generateFinalRegulation(normalizedMessages, systemPrompt, writer, documentContent, { userId, conversationId });
+          await generateFinalRegulation(normalizedMessages, userPrompt, writer, documentContent, { userId, conversationId });
         } catch (error) {
           console.error('Regulation generation error:', error);
           writer.write({ type: 'text-start', id: 'error' });
@@ -722,30 +717,12 @@ ${lastText}
     return wrapReadableWithSessionSave(readable, userId);
   }
 
-  if (intent.type === 'search') {
-    const stream = await serpAgent(normalizedMessages, effectiveSystemPrompt, baseTools);
-    const resp = stream.toUIMessageStreamResponse({
-      originalMessages: normalizedMessages,
-      onFinish: async ({ messages: finished }) => {
-        if (userId) {
-          try {
-            if (conversationId) {
-              await updateConversation(conversationId, finished);
-            } else {
-              await saveConversation(userId, finished);
-            }
-          } catch (e) {
-            console.error('search onFinish persistence failed', e);
-          }
-        }
-      }
-    });
-    return wrapResponseWithSessionSave(resp, userId);
-  }
+  // if (intent.type === 'search') { ... } removed
 
   // Основной диалог
   const stream = streamText({
     model,
+    temperature: 0.3,
     tools: baseTools,
     messages: convertToModelMessages(extendedMessages),
     system: effectiveSystemPrompt,
@@ -827,7 +804,7 @@ function getDocumentGuidance(): { heading: string; actions: string } {
 // Функция для формирования финального регламента
 async function generateFinalRegulation(
   messages: any[], 
-  systemPrompt: string,
+  userPrompt: string | null,
   dataStream: any,
   existingDocument?: string,
   saveContext?: { userId?: string, conversationId?: string | null }
@@ -847,6 +824,13 @@ async function generateFinalRegulation(
 Если данных нет — пиши "*Информация не предоставлена в диалоге.*". 
 Никаких кодовых блоков и тройных кавычек.`;
 
+  if (userPrompt) {
+    directive += `\n\nВАЖНО: При формировании документа следуй структуре и требованиям, заданным в пользовательском промте (если они там есть):
+"""
+${userPrompt}
+"""`;
+  }
+
   if (existingDocument && existingDocument.trim().length > 20) {
     directive += `\n\nТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (которую нужно исправить/дополнить):
 """
@@ -861,6 +845,7 @@ ${conversationContext}`;
 
   const stream = await streamText({
     model,
+    temperature: 0.3,
     //system: systemPrompt,
     messages: [
       {
