@@ -90,7 +90,7 @@ DEFINE FIELD messages_raw ON conversations TYPE string;
 DEFINE FIELD title ON conversations TYPE string;
 
 -- контент документа (опционально)
-DEFINE FIELD document_content ON conversations TYPE string;
+DEFINE FIELD document_content ON conversations TYPE option<string>;
 
 DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY;
 
@@ -276,13 +276,17 @@ export async function saveConversation(userId: string, messages: any, documentCo
     console.log('saveConversation: final DB payload userRef=', userRef, 'messages=[unserializable]');
   }
 
-  const [conv] = await db.create('conversations', { 
+  const createPayload: any = { 
     user: userRecord, 
     messages: sanitizedClean, 
     title: "Чат",
-    messages_raw: JSON.stringify(sanitizedClean),
-    document_content: documentContent || undefined
-  });
+    messages_raw: JSON.stringify(sanitizedClean)
+  };
+  if (documentContent) {
+    createPayload.document_content = documentContent;
+  }
+
+  const [conv] = await db.create('conversations', createPayload);
   // Create a RecordId for this conversation so further operations use the proper record object
   const convClean = String((conv as any).id).replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', convClean);
