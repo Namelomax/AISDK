@@ -13,7 +13,7 @@ type ConversationAreaProps = {
   messages: any[];
   status: string;
   copiedId: string | null;
-  onRegenerate: () => void;
+  onRegenerate: (id: string) => void;
   onCopy: (text: string, id: string) => void;
 };
 

@@ -46,7 +46,7 @@ type MessageRendererProps = {
   isLastMessage: boolean;
   status: string;
   copiedId: string | null;
-  onRegenerate: () => void;
+  onRegenerate: (id: string) => void;
   onCopy: (text: string, id: string) => void;
 };
 
@@ -56,6 +56,7 @@ const sanitizeUserText = (text: string) => {
   const visible = text.replace(hiddenPattern, '').trim();
   return { visible, hadHidden };
 };
+
 
 const renderTextResponse = (rawText: string, key: string) => {
   const { visible, hadHidden } = sanitizeUserText(rawText);
@@ -260,7 +261,7 @@ export const MessageRenderer = ({
 
         {textParts.length > 0 && status !== 'streaming' && (
           <Actions>
-            <Action onClick={onRegenerate} label="Retry">
+            <Action onClick={() => onRegenerate(message.id)} label="Retry">
               <RefreshCcw className="size-3" />
             </Action>
             <Action

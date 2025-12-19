@@ -270,32 +270,34 @@ export async function saveConversation(userId: string, messages: any, documentCo
   const sanitizedClean = JSON.parse(JSON.stringify(sanitized));
 
   console.log('saveConversation: sanitized length=', Array.isArray(sanitizedClean) ? sanitizedClean.length : 'N/A', 'sample=', sanitizedClean[0]);
+  /*
   try {
     console.log('saveConversation: final DB payload userRef=', userRef, 'messages=', JSON.stringify(sanitizedClean));
   } catch (e) {
     console.log('saveConversation: final DB payload userRef=', userRef, 'messages=[unserializable]');
   }
+  */
 
   const createPayload: any = { 
     user: userRecord, 
     messages: sanitizedClean, 
     title: "Чат",
-    messages_raw: JSON.stringify(sanitizedClean)
+    messages_raw: JSON.stringify(sanitizedClean),
+    document_content: documentContent || ""
   };
-  if (documentContent) {
-    createPayload.document_content = documentContent;
-  }
 
   const [conv] = await db.create('conversations', createPayload);
   // Create a RecordId for this conversation so further operations use the proper record object
   const convClean = String((conv as any).id).replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', convClean);
   let storedConv: any = conv;
+  /*
   try {
     console.log('✅ Created conversation (create response) for', userRef, 'id=', String((conv as any).id), 'rawConv=', JSON.stringify(conv));
   } catch (e) {
     console.log('✅ Created conversation (create response) for', userRef, 'id=', String((conv as any).id), 'rawConv=[unserializable]');
   }
+  */
 
   // Some SurrealDB setups may not persist nested arrays immediately in the create response.
   // Ensure messages are explicitly merged/set after creation to avoid empty arrays.
@@ -318,11 +320,13 @@ export async function saveConversation(userId: string, messages: any, documentCo
     }
 
     if (storedConv) {
+      /*
       try {
         console.log('saveConversation: after merge select storedConv=', JSON.stringify(storedConv));
       } catch (e) {
         console.log('saveConversation: after merge storedConv=[unserializable]');
       }
+      */
     } else {
       console.warn('saveConversation: unable to read back stored conversation after merge for id=', String(conv.id));
     }
@@ -337,21 +341,25 @@ export async function saveConversation(userId: string, messages: any, documentCo
       console.log('saveConversation: attempting explicit UPDATE to set messages via SQL for', String(conv.id));
       // Use CONTENT to set the messages fields explicitly as a stronger fallback
       const uq = await db.query(`UPDATE ${convRecord} CONTENT $content RETURN AFTER;`, { content: { messages: sanitizedClean, messages_raw: JSON.stringify(sanitizedClean) } }).catch(() => undefined) as any;
+      /*
       try {
         console.log('saveConversation: UPDATE result=', JSON.stringify(uq));
       } catch (e) {
         console.log('saveConversation: UPDATE result=[unserializable]');
       }
+      */
 
       const sel2 = await db.select(convRecord).catch(() => undefined);
       const newConv = Array.isArray(sel2) ? sel2[0] : sel2;
       if (newConv) {
         storedConv = newConv;
+        /*
         try {
           console.log('saveConversation: after UPDATE select storedConv=', JSON.stringify(storedConv));
         } catch (e) {
           console.log('saveConversation: after UPDATE storedConv=[unserializable]');
         }
+        */
       } else {
         console.warn('saveConversation: UPDATE did not persist messages for', String(convRecord));
       }
@@ -363,17 +371,19 @@ export async function saveConversation(userId: string, messages: any, documentCo
   // Final fallback: persist messages as a JSON string in `messages_raw` field
   if (!Array.isArray((storedConv as any)?.messages) || (storedConv as any)?.messages?.length === 0) {
       try {
-        console.log('saveConversation: persisting messages as JSON string in `messages_raw` for', String(convRecord));
+        // console.log('saveConversation: persisting messages as JSON string in `messages_raw` for', String(convRecord));
         await db.merge(convRecord, { messages_raw: JSON.stringify(sanitizedClean) }).catch(() => undefined);
         const sel3 = await db.select(convRecord).catch(() => undefined);
         const got = Array.isArray(sel3) ? sel3[0] : sel3;
       if (got) {
         storedConv = got;
+        /*
         try {
           console.log('saveConversation: after messages_raw merge storedConv=', JSON.stringify(storedConv));
         } catch (e) {
           console.log('saveConversation: after messages_raw storedConv=[unserializable]');
         }
+        */
       }
     } catch (e) {
       console.error('saveConversation: failed to persist messages_raw fallback', e);
@@ -409,7 +419,7 @@ export async function updateConversation(conversationId: string, messages: any, 
   const recordIdString = `conversations:${clean}`;
 
   // Sanitize messages before update
-  console.log('updateConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
+  // console.log('updateConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
   const sanitized = Array.isArray(messages)
     ? messages.map((m: any) => ({
         id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
@@ -424,12 +434,14 @@ export async function updateConversation(conversationId: string, messages: any, 
 
   const sanitizedClean = JSON.parse(JSON.stringify(sanitized));
 
-  console.log('updateConversation: sanitized length=', Array.isArray(sanitizedClean) ? sanitizedClean.length : 'N/A', 'sample=', sanitizedClean[0]);
+  // console.log('updateConversation: sanitized length=', Array.isArray(sanitizedClean) ? sanitizedClean.length : 'N/A', 'sample=', sanitizedClean[0]);
+  /*
   try {
     console.log('updateConversation: final DB payload recordId=', recordIdString, 'messages=', JSON.stringify(sanitizedClean));
   } catch (e) {
     console.log('updateConversation: final DB payload recordId=', recordIdString, 'messages=[unserializable]');
   }
+  */
 
   // Attempt merge first using RecordId object for consistency
   const updatePayload: any = { 
@@ -478,12 +490,14 @@ export async function updateConversation(conversationId: string, messages: any, 
     };
   }
 
+  /*
   try {
     console.log('updateConversation: stored conversation messages length=', Array.isArray((convData as any)?.messages) ? (convData as any).messages.length : 'N/A', 'sample=', (convData as any)?.messages?.[0]);
     console.log('updateConversation: stored conversation raw=', JSON.stringify(convData));
   } catch (e) {
     console.log('updateConversation: stored conversation raw=[unserializable]');
   }
+  */
 
   // If messages empty but messages_raw exists, try to parse it
   let storedMessages: any = convData?.messages;
@@ -543,6 +557,7 @@ export async function renameConversation(convId: string, title: string): Promise
     messages_raw: String((convData as any).messages_raw ?? ''),
     created: String((convData as any).created ?? new Date().toISOString()),
     title: trimmedTitle,
+    document_content: (convData as any).document_content,
   };
 }
 
@@ -572,13 +587,20 @@ export async function createConversation(userId: string, title?: string): Promis
   await connectDB();
   const userRef = userId.startsWith('users:') ? userId.replace(/^users:/, '') : userId;
   const userRecord = new RecordId('users', userRef);
-  const [conv] = await db.create('conversations', { user: userRecord, messages: [], messages_raw: JSON.stringify([]), title: title ?? 'New conversation' });
+  const [conv] = await db.create('conversations', { 
+    user: userRecord, 
+    messages: [], 
+    messages_raw: JSON.stringify([]), 
+    title: title ?? 'New conversation',
+    document_content: "" 
+  });
   return {
     id: conv.id.toString(),
     user: String((conv as any).user),
     messages: (conv as any).messages,
     messages_raw: (conv as any).messages_raw,
     created: String((conv as any).created),
+    document_content: (conv as any).document_content,
   };
 }
 

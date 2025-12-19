@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { Response } from '@/components/ai-elements/response';
 
@@ -32,6 +32,14 @@ export type DocumentState = {
 
 export const DocumentPanel = ({ document, onCopy }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when content changes during streaming
+  useEffect(() => {
+    if (document.isStreaming && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [document.content, document.isStreaming]);
 
   const handleCopy = async () => {
     if (!document.title) return;
@@ -59,11 +67,17 @@ export const DocumentPanel = ({ document, onCopy }: DocumentPanelProps) => {
   const formattedContent = formatDocumentContent(document.content);
 
   return (
-    <div className="flex-1 bg-background border-l overflow-auto">
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4 sticky top-0 bg-background pb-2 border-b z-10">
-          <h2 className="text-xl font-semibold">{displayTitle}</h2>
+    <div className="flex-1 bg-background border-l overflow-hidden flex flex-col">
+      <div className="flex items-center justify-between p-4 border-b bg-background z-10">
+        <h2 className="text-xl font-semibold truncate" title={displayTitle}>{displayTitle}</h2>
 
+        <div className="flex items-center gap-2 shrink-0">
+          {document.isStreaming && (
+            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 animate-pulse">
+              Генерация...
+            </span>
+          )}
+          
           {document.title && (
             <button
               onClick={handleCopy}
@@ -73,14 +87,10 @@ export const DocumentPanel = ({ document, onCopy }: DocumentPanelProps) => {
               {copied ? 'Скопировано!' : 'Скопировать'}
             </button>
           )}
-
-          {document.isStreaming && (
-            <span className="ml-3 text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 animate-pulse">
-              Генерация...
-            </span>
-          )}
         </div>
+      </div>
 
+      <div ref={scrollRef} className="flex-1 overflow-auto p-6">
         <Response className="prose prose-sm max-w-none dark:prose-invert">
           {formattedContent}
         </Response>

@@ -42,16 +42,18 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { conversationId, messages, title } = body as any;
+    const { conversationId, messages, title, documentContent } = body as any;
     if (!conversationId) return new Response(JSON.stringify({ success: false, message: 'conversationId required' }), { status: 400 });
     const hasMessages = Array.isArray(messages);
     const hasTitle = typeof title === 'string' && title.trim().length > 0;
-    if (!hasMessages && !hasTitle) {
-      return new Response(JSON.stringify({ success: false, message: 'messages or title required' }), { status: 400 });
+    const hasDocument = typeof documentContent === 'string';
+
+    if (!hasMessages && !hasTitle && !hasDocument) {
+      return new Response(JSON.stringify({ success: false, message: 'messages, title or documentContent required' }), { status: 400 });
     }
     let updated = null;
-    if (hasMessages) {
-      updated = await updateConversation(conversationId, messages);
+    if (hasMessages || hasDocument) {
+      updated = await updateConversation(conversationId, messages || [], documentContent);
     }
     if (hasTitle) {
       updated = await renameConversation(conversationId, title.trim());

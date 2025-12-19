@@ -31,6 +31,26 @@ export default function ChatPage() {
     setSelectedPromptId(prompt?.id ?? null);
   }, []);
 
+  const handleRegenerate = (messageId: string) => {
+    const index = messages.findIndex(m => m.id === messageId);
+    if (index === -1) return;
+    
+    const message = messages[index];
+    let newMessages;
+    
+    if (message.role === 'user') {
+      // If user message, keep it and remove everything after
+      newMessages = messages.slice(0, index + 1);
+    } else {
+      // If assistant message, remove it and everything after
+      newMessages = messages.slice(0, index);
+    }
+    
+    setMessages(newMessages);
+    // Force reload with the truncated history
+    regenerate({ body: { messages: newMessages } });
+  };
+
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -63,7 +83,7 @@ export default function ChatPage() {
     messages: initialMessages,
     onError: (error) => console.error('Chat error:', error),
     onData: (dataPart) => {
-      console.log('📥 Received data:', dataPart);
+      // console.log('📥 Received data:', dataPart);
       
       // Обработка событий документа
       if (dataPart.type === 'data-title') {
@@ -100,6 +120,17 @@ export default function ChatPage() {
       }
     },
   });
+  useEffect(() => {
+    if (!conversationId) return;
+    setConversationsList((prev) =>
+      prev.map((c) =>
+        c.id === conversationId
+          ? { ...c, document_content: document.content }
+          : c
+      )
+    );
+  }, [document.content, conversationId]);
+
   const [lastSavedAssistantId, setLastSavedAssistantId] = useState<string | null>(null);
   useEffect(() => {
     if (!authUser?.id || !conversationId) return;
@@ -110,21 +141,26 @@ export default function ChatPage() {
     if (last.id === lastSavedAssistantId) return;
     (async () => {
       try {
+        // Only send documentContent if it's not empty, otherwise undefined to avoid overwriting with empty string if not intended
+        // But here we want to save whatever is in the state.
+        // If the state is empty but DB has content, we might overwrite it with empty.
+        // However, we load content on mount/select. So state should be in sync.
+        
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId, messages }),
+          body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
         });
         const j = await resp.json();
         if (j?.success) {
           setLastSavedAssistantId(last.id);
-          setConversationsList(prev => prev.map(conv => conv.id === conversationId ? { ...conv, messages: messages } : conv));
+          setConversationsList(prev => prev.map(conv => conv.id === conversationId ? { ...conv, messages: messages, document_content: document.content } : conv));
         }
       } catch (e) {
         console.warn('Failed to persist conversation after finish', e);
       }
     })();
-  }, [status, messages, authUser?.id, conversationId, lastSavedAssistantId]);
+  }, [status, messages, authUser?.id, conversationId, lastSavedAssistantId, document.content]);
 
   useEffect(() => {
       const raw = localStorage.getItem('authUser');
@@ -162,6 +198,22 @@ export default function ChatPage() {
             if (activeConv) {
               setConversationId(activeConv.id);
               setMessages(toUIMessages(activeConv.messages));
+              
+              // Restore document content
+              if (activeConv.document_content) {
+                setDocument({
+                  title: activeConv.title || 'Документ',
+                  content: activeConv.document_content,
+                  isStreaming: false,
+                });
+              } else {
+                setDocument({
+                  title: '',
+                  content: '',
+                  isStreaming: false,
+                });
+              }
+
               localStorage.setItem('activeConversationId', activeConv.id);
             } else {
                       setConversationsList([]);
@@ -203,6 +255,21 @@ export default function ChatPage() {
             if (first) {
               setConversationId(first.id ?? null);
               setMessages(toUIMessages(first.messages));
+              
+              // Restore document content on login
+              if (first.document_content) {
+                setDocument({
+                  title: first.title || 'Документ',
+                  content: first.document_content,
+                  isStreaming: false,
+                });
+              } else {
+                setDocument({
+                  title: '',
+                  content: '',
+                  isStreaming: false,
+                });
+              }
             }
           } catch (e) {
             console.warn('Failed to normalize conversations from auth response', e);
@@ -403,7 +470,7 @@ export default function ChatPage() {
             messages={messages}
             status={status}
             copiedId={copiedId}
-            onRegenerate={regenerate}
+            onRegenerate={handleRegenerate}
             onCopy={handleCopy}
           />
           {/* Поле ввода и менеджер промптов */}

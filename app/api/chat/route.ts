@@ -479,9 +479,6 @@ export async function POST(req: Request) {
   }
 
   const currentDocument = normalizedMessages.length ? normalizedMessages.at(-1)?.metadata?.currentDocument : undefined;
-  console.log(currentDocument, 'currentDocument');
-  console.log(normalizedMessages.length ? normalizedMessages.at(-1) : undefined, 'message');
-
   if (newSystemPrompt) {
     // If userId provided, save prompt for user
     try {
@@ -500,8 +497,6 @@ export async function POST(req: Request) {
   }
 
   const userPrompt = await resolveSystemPrompt(userId, selectedPromptId);
-  console.log('Resolved user prompt:', userPrompt ? userPrompt.slice(0, 50) : 'null', 'for userId:', userId, 'selectedPromptId:', selectedPromptId);
-
   const lastUserMessage = normalizedMessages[normalizedMessages.length - 1];
   const lastText =
     lastUserMessage?.content ||
@@ -563,13 +558,6 @@ export async function POST(req: Request) {
     ...supplementalMessages,
   ];
 
-  console.log('🔍 Debug Info:', {
-    totalMessages: normalizedMessages.length,
-    lastUserMessage: lastText.substring(0, 150),
-  });
-
-  // If userId provided, save or update conversation in background.
-  // Some clients may not send `messages` as an array; build a sensible fallback.
   if (userId) {
     try {
       const convId = (body && body.conversationId) || (() => {
@@ -634,8 +622,11 @@ ${userPrompt || 'Нет специфической задачи'}
 Инструкции:
 1. "generate_regulation" выбирай ТОЛЬКО если:
    - Пользователь ЯВНО просит "сформировать", "создать", "написать" итоговый регламент/документ.
-   - Агент в предыдущем сообщении предложил сформировать документ, и пользователь согласился ("да", "давай", "хорошо").
-2. Во всех остальных случаях выбирай "chat".
+   - Агент в предыдущем сообщении ПРЯМО предложил сформировать ФИНАЛЬНЫЙ документ (весь регламент целиком), и пользователь согласился ("да", "давай", "хорошо").
+
+2. Во всех остальных случаях выбирай "chat". В ТОМ ЧИСЛЕ:
+   - Если агент предложил перейти к следующему шагу/разделу (например, "перейдем к разделу 3"), и пользователь согласился -> "chat".
+   - Если пользователь подтверждает промежуточный результат (например, "все верно", "подтверждаю") -> "chat".
    - Если пользователь загрузил файлы и просит их проанализировать -> "chat".
    - Если пользователь задает вопросы -> "chat".
    - Если идет обсуждение деталей -> "chat".
@@ -662,17 +653,18 @@ ${lastText}
   }
 
   const intent = { type: intentType };
+
+
+  const effectiveSystemPrompt = systemPrompt + `
   
-  // Removed explicit blocking logic to allow smart detection
-  // const explicitRegulationRequest = isExplicitRegulationRequest(lastText);
-  // if (intent.type === 'generate_regulation' && !explicitRegulationRequest) { ... }
+=== ВАЖНЫЕ ИНСТРУКЦИИ ПО ВЕДЕНИЮ ДИАЛОГА ===
+1. Если пользователь подтверждает промежуточный результат (например, "Все хорошо", "Подтверждаю"), НЕ ЗАВЕРШАЙ РАБОТУ. Переходи к следующему этапу сбора информации (следующий раздел структуры).
+2. НИКОГДА не выводи текст регламента целиком в чат. Регламент формируется только в специальной панели отдельным процессом.
+3. НЕ предлагай экспорт в PDF/Word, рассылку, презентацию или публикацию. Твоя задача — только сбор информации и формирование текста.
+4. Если пользователь просит показать документ, скажи, что сформируешь его в панели справа.
+`;
 
-  // Removed document intent logic that forced "insufficient data" message
-  // let systemAddendum = '';
-  // if (intent.type === 'document') { ... }
-
-  const effectiveSystemPrompt = systemPrompt;
-
+  
   console.log('System prompt applied:', {
     userId: userId || 'anon',
     length: effectiveSystemPrompt.length,
@@ -680,14 +672,17 @@ ${lastText}
   });
 
   console.log('Detected intent:', intent.type);
+  
 
   // === Роутинг по агентам ===
   if (intent.type === 'generate_regulation') {
+    let generatedDocumentContent = '';
+
     const stream = createUIMessageStream({
       originalMessages: normalizedMessages,
       execute: async ({ writer }) => {
         try {
-          await generateFinalRegulation(normalizedMessages, userPrompt, writer, documentContent, { userId, conversationId });
+          generatedDocumentContent = await generateFinalRegulation(normalizedMessages, userPrompt, writer, documentContent, { userId, conversationId });
         } catch (error) {
           console.error('Regulation generation error:', error);
           writer.write({ type: 'text-start', id: 'error' });
@@ -703,9 +698,9 @@ ${lastText}
         if (userId) {
           try {
             if (conversationId) {
-              await updateConversation(conversationId, finished);
+              await updateConversation(conversationId, finished, generatedDocumentContent);
             } else {
-              await saveConversation(userId, finished);
+              await saveConversation(userId, finished, generatedDocumentContent);
             }
           } catch (e) {
             console.error('generate_regulation persistence failed', e);
@@ -717,9 +712,6 @@ ${lastText}
     return wrapReadableWithSessionSave(readable, userId);
   }
 
-  // if (intent.type === 'search') { ... } removed
-
-  // Основной диалог
   const stream = streamText({
     model,
     temperature: 0.3,
@@ -746,7 +738,6 @@ ${lastText}
   return wrapResponseWithSessionSave(resp, userId);
 }
 
-// Helper to wrap a ReadableStream (SSE)
 function wrapReadableWithSessionSave(readable: ReadableStream, userId?: string | null) {
   const wrapped = new ReadableStream({
     async start(controller) {
@@ -761,7 +752,6 @@ function wrapReadableWithSessionSave(readable: ReadableStream, userId?: string |
       } catch (err) {
         controller.error(err);
       }
-      // no-op: we no longer persist session info here
     }
   });
 
@@ -784,7 +774,6 @@ function wrapResponseWithSessionSave(resp: Response, userId?: string | null) {
       } catch (err) {
         controller.error(err);
       }
-      // no-op: session persistence disabled
     }
   });
 
@@ -794,13 +783,6 @@ function wrapResponseWithSessionSave(resp: Response, userId?: string | null) {
   return new Response(wrapped, { status: resp.status, headers });
 }
 
-function getDocumentGuidance(): { heading: string; actions: string } {
-  return {
-    heading: 'Нужно ещё немного информации, прежде чем формировать документ.',
-    actions: '- Опишите цель процесса и роль регламента.\n- Перечислите участников, входы и выходы.\n- Пришлите файлы или текст с деталями, если они есть.',
-  };
-}
-
 // Функция для формирования финального регламента
 async function generateFinalRegulation(
   messages: any[], 
@@ -808,7 +790,7 @@ async function generateFinalRegulation(
   dataStream: any,
   existingDocument?: string,
   saveContext?: { userId?: string, conversationId?: string | null }
-) {
+): Promise<string> {
   const conversationContext = messages
     .map((msg) => {
       const text = msg.content || msg.parts?.find((p: any) => p.type === 'text')?.text || '';
@@ -880,7 +862,7 @@ ${conversationContext}`;
     if (!chunk) continue;
 
     // удаляем возможные кодовые блоки, если модель всё же их добавила
-    chunk = chunk.replace(/```markdown\s*/gi, '').replace(/```/g, '');
+    chunk = chunk.replace(new RegExp('```markdown\\s*', 'gi'), '').replace(new RegExp('```', 'g'), '');
     if (!chunk) continue;
 
     // Буферизуем первую строку с заголовком, чтобы не было разрывов внутри слова
@@ -906,7 +888,8 @@ ${conversationContext}`;
           finalTitle = titleMatch[1].trim() || finalTitle;
           dataStream.write({ type: 'data-title', data: finalTitle });
           publishedFinalTitle = true;
-          chunk = restAfterHeading; // Заголовок уходит в мету, из текста убираем
+          // chunk = restAfterHeading; // Заголовок уходит в мету, из текста убираем
+          chunk = headingBuffer; // Оставляем заголовок в тексте документа
         } else {
           // Если первая строка не похожа на заголовок, оставляем её в тексте
           chunk = headingBuffer;
@@ -946,15 +929,11 @@ ${conversationContext}`;
   if (saveContext?.conversationId) {
     try {
       const mod = await import('@/lib/getPromt');
-      // We only update the document content here, messages are updated in onFinish
-      // But wait, onFinish runs AFTER this execute function finishes?
-      // Yes. But onFinish receives `messages` which are the chat messages.
-      // It does NOT receive the document content.
-      // So we must save document content here.
-      // However, updateConversation expects messages. We can pass the current messages.
       await mod.updateConversation(saveContext.conversationId, messages, fullContent);
     } catch (e) {
       console.error('Failed to save generated document:', e);
     }
   }
+
+  return fullContent;
 }
