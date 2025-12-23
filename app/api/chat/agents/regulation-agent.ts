@@ -7,7 +7,7 @@ export async function runRegulationAgent(context: AgentContext) {
   let generatedDocumentContent = '';
 
   const stream = createUIMessageStream({
-    originalMessages: messages as any, // Cast to any to satisfy UIMessage type if needed, or convert
+    originalMessages: messages as any,
     execute: async ({ writer }) => {
       try {
         generatedDocumentContent = await generateFinalRegulation(

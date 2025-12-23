@@ -14,16 +14,11 @@ export async function runChatAgent(context: AgentContext, systemPrompt: string, 
   }
   
   messagesWithUserPrompt.push(...(messages as ModelMessage[]));
-  const systemInstructions = `${systemPrompt}
-  # ПРАВИЛА ОТВЕТОВ
-  Выводи итоговый регламент только после того, как с пользователем пройдешь все шаги описания цепочек кооперации, каждый подпункт это отдельный этап который нужно подробно обсудить и согласовать с пользователем.
-  Запрещено выводить разделы регламента до финальной сборки
-  Запрещено выводить регламент отдельно по блокам (разделам)`;
   const stream = streamText({
     model,
     temperature: 0.1,
     messages: messagesWithUserPrompt,
-    system: systemInstructions, // System instructions + parsed files
+    system: systemPrompt, // System instructions + parsed files
   });
 
   return stream.toUIMessageStreamResponse({
