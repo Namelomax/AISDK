@@ -78,7 +78,7 @@ export default function ChatPage() {
   }, [authUser?.id, conversationId]);
 
   const chatKey = `${conversationId ?? 'no'}-${authUser?.id ?? 'anon'}`;
-  const { messages, sendMessage, status, regenerate, setMessages } = useChat({
+  const { messages, sendMessage, status, regenerate, setMessages, stop } = useChat({
     transport,
     messages: initialMessages,
     onError: (error) => console.error('Chat error:', error),
@@ -412,6 +412,12 @@ export default function ChatPage() {
     setConversationsList((prev) => [localConv, ...prev]);
     setConversationId(localId);
     setMessages([]);
+    // Reset document panel on new chat
+    setDocument({
+      title: '',
+      content: '',
+      isStreaming: false,
+    });
     localStorage.setItem('activeConversationId', localId);
   };
 
@@ -487,6 +493,7 @@ export default function ChatPage() {
                 setConversationsList={setConversationsList}
                 setMessages={setMessages}
                 sendMessage={sendMessage}
+                stop={stop}
                 selectedPromptId={selectedPromptId}
                 documentContent={document.content}
               />

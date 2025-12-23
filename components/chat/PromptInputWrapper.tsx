@@ -29,14 +29,21 @@ const AttachmentsSection = () => {
   );
 };
 
-const SubmitButton = ({ status, input }: { status: string; input: string }) => {
+const SubmitButton = ({ status, input, onStop }: { status: string; input: string; onStop?: () => void }) => {
   const attachments = usePromptInputAttachments();
   const canSend = status === 'ready' && (input.trim().length > 0 || attachments.files.length > 0);
+  const isStreaming = status === 'streaming';
 
   return (
     <PromptInputSubmit
-      status={status === 'streaming' ? 'streaming' : 'ready'}
-      disabled={!canSend}
+      status={isStreaming ? 'streaming' : 'ready'}
+      disabled={!canSend && !isStreaming}
+      onClick={(e) => {
+        if (isStreaming && onStop) {
+          e.preventDefault();
+          onStop();
+        }
+      }}
     />
   );
 };
@@ -101,6 +108,7 @@ type PromptInputWrapperProps = {
   setConversationsList: Dispatch<SetStateAction<any[]>>;
   setMessages: (messages: any[]) => void;
   sendMessage: (payload: any, options?: any) => void;
+  stop: () => void;
   className?: string;
   selectedPromptId?: string | null;
   documentContent?: string;
@@ -116,6 +124,7 @@ export const PromptInputWrapper = ({
   setConversationsList,
   setMessages,
   sendMessage,
+  stop,
   className,
   selectedPromptId,
   documentContent,
@@ -208,7 +217,7 @@ return (
             </PromptInputActionMenuContent>
           </PromptInputActionMenu>
 
-          <SubmitButton status={status} input={input} />
+          <SubmitButton status={status} input={input} onStop={stop} />
         </div>
       </div>
 
