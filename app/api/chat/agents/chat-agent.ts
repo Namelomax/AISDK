@@ -1,17 +1,30 @@
-import { streamText, convertToModelMessages } from 'ai';
+import { streamText, ModelMessage } from 'ai';
 import { AgentContext } from './types';
 import { updateConversation, saveConversation } from '@/lib/getPromt';
 
-export async function runChatAgent(context: AgentContext, systemPrompt: string) {
+export async function runChatAgent(context: AgentContext, systemPrompt: string, userPrompt: string) {
   const { messages, model, userId, conversationId } = context;
 
-  // Minimal instructions to ensure smooth operation without overriding user intent
-  const effectiveSystemPrompt = systemPrompt;
+  // Build messages array with userPrompt as a dedicated instruction message
+  // This ensures AI reads and follows the userPrompt (e.g., TestPromt.md)
+  const messagesWithUserPrompt: ModelMessage[] = [];
+  
+  // Add userPrompt as first system message if provided (AI Reglamenter instructions)
+  if (userPrompt && userPrompt.trim()) {
+    messagesWithUserPrompt.push({
+      role: 'system',
+      content: `# ИНСТРУКЦИИ ДЛЯ РОЛИ\n\nСледуй этим инструкциям в каждом ответе:\n\n${userPrompt}`,
+    });
+  }
+  
+  // Add conversation messages
+  messagesWithUserPrompt.push(...(messages as ModelMessage[]));
+    
   const stream = streamText({
     model,
-    temperature: 0.3,
-    messages: messages,
-    system: effectiveSystemPrompt,
+    temperature: 0.1,
+    messages: messagesWithUserPrompt,
+    system: systemPrompt, // System instructions + parsed files
   });
 
   return stream.toUIMessageStreamResponse({

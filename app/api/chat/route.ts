@@ -25,15 +25,13 @@ const model = openrouter.chat('nvidia/nemotron-3-nano-30b-a3b:free');
 
 let cachedPrompt: string | null = null;
 
-// === HELPER FUNCTIONS ===
-
 function buildSystemPrompt(userPrompt: string, hiddenDocsContext?: string): string {
-  const trimmed = (userPrompt ?? '').trim();
-  const base = trimmed || 'Ты — полезный AI-ассистент. Твоя задача — помогать пользователю, отвечая на вопросы и выполняя инструкции.';
+  //const trimmed = (userPrompt ?? '').trim();
+  //const base = trimmed || 'Ты — полезный AI-ассистент. Твоя задача — помогать пользователю, отвечая на вопросы и выполняя инструкции.';
   
-  if (!hiddenDocsContext) return base;
+  //if (!hiddenDocsContext) return base;
 
-  return `${base}
+  return `
 
 ===== ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ (КОНТЕКСТ) =====
 ${hiddenDocsContext}
@@ -407,6 +405,6 @@ export async function POST(req: Request) {
   if (intent === 'generate_regulation') {
     return runRegulationAgent(agentContext);
   } else {
-    return runChatAgent(agentContext, systemPrompt);
+    return runChatAgent(agentContext, systemPrompt,userPrompt);
   }
 }

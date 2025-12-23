@@ -96,7 +96,7 @@ ${conversationContext}`;
 
   const stream = await streamText({
     model,
-    temperature: 0.3,
+    temperature: 0.1,
     messages: [
       {
         role: 'user',

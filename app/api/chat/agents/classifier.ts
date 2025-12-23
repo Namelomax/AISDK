@@ -48,6 +48,7 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
   try {
     const { object: intentObj } = await generateObject({
       model,
+      temperature: 0.1,
       schema: z.object({
         type: z.enum(['chat', 'generate_regulation']),
       }),
