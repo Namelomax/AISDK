@@ -56,8 +56,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
   }, [document.content, document.isStreaming]);
 
   const handleCopy = async () => {
-    if (!document.title) return;
-    const formatted = `# ${document.title}\n\n${document.content}`;
+    const formatted = `# ${displayTitle}\n\n${viewContent}`;
 
     try {
       await navigator.clipboard.writeText(formatted);
@@ -70,8 +69,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
   };
 
   const handleDownload = () => {
-    if (!document.title) return;
-    const formatted = `# ${document.title}\n\n${document.content}`;
+    const formatted = `# ${displayTitle}\n\n${viewContent}`;
     
     // Create blob and download
     const blob = new Blob([formatted], { type: 'text/markdown;charset=utf-8' });
@@ -79,7 +77,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
     const link = window.document.createElement('a');
     
     // Sanitize filename
-    const filename = document.title
+    const filename = displayTitle
       .replace(/[<>:"/\\|?*]/g, '') // Remove invalid characters
       .replace(/\s+/g, '_') // Replace spaces with underscores
       .slice(0, 100) // Limit length
@@ -93,16 +91,14 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
     URL.revokeObjectURL(url);
   };
 
-  const shouldRender =
-    document.isStreaming ||
-    Boolean(localDoc.title) ||
-    Boolean(localDoc.content.trim().length);
+  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
 
-  if (!shouldRender) return null;
+  const displayTitle =
+    localDoc.title || (localDoc.isStreaming ? 'Генерация документа…' : 'Пример документа');
 
-  const displayTitle = localDoc.title || (localDoc.isStreaming ? 'Генерация документа…' : 'Документ');
+  const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
 
-  const formattedContent = formatDocumentContent(localDoc.content);
+  const formattedContent = formatDocumentContent(viewContent);
 
   const startEdit = () => {
     setEditing(true);
@@ -138,7 +134,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
               Генерация...
             </span>
           )}
-          {localDoc.title && !editing && (
+          {!editing && (
             <button
               onClick={startEdit}
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -163,7 +159,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
             </div>
           )}
 
-          {localDoc.title && !editing && (
+          {!editing && (
             <>
               <button
                 onClick={handleDownload}
