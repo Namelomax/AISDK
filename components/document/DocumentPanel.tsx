@@ -7,16 +7,8 @@ import { Response } from '@/components/ai-elements/response';
 const formatDocumentContent = (raw: string) => {
   if (!raw) return '';
   const normalized = raw.replace(/\r\n?/g, '\n');
-  return normalized
-    .replace(
-      /(\*\*\d+\.\s.*?\*\*)(\s*)(?=\n?\s*\d+\.\d)/g,
-      (_match, heading) => `${heading}\n\n`
-    )
-    .replace(
-      /(\d+\.\d+\.\s.*?)(\s*)(?=\n?\s*\d+\.\d+\.)/g,
-      (_match, heading) => `${heading}\n`
-    )
-    .replace(/\n(?=\d+\.)/g, '\n\n');
+  // Preserve manual indentation by converting leading spaces on each line to non-breaking spaces
+  return normalized.replace(/^(\s+)/gm, (m) => m.replace(/ /g, '\u00A0'));
 };
 
 type DocumentPanelProps = {
