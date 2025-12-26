@@ -9,7 +9,7 @@ export async function runChatAgent(context: AgentContext, systemPrompt: string, 
   if (userPrompt && userPrompt.trim()) {
     messagesWithUserPrompt.push({
       role: 'system',
-      content: `# ИНСТРУКЦИИ ДЛЯ РОЛИ\n\nСледуй этим инструкциям в каждом ответе:\n\n${userPrompt}`,
+      content: `# ИНСТРУКЦИИ ДЛЯ РОЛИ\n\nСледуй этим инструкциям в каждом ответе:\n\n${userPrompt}\n\nВАЖНО: СЕЙЧАС ТЫ В РЕЖИМЕ ИНТЕРВЬЮ (CHAT MODE). ТВОЯ ЗАДАЧА — ТОЛЬКО СБОР ИНФОРМАЦИИ И УТОЧНЕНИЕ ДЕТАЛЕЙ. НЕ ГЕНЕРИРУЙ ПОЛНЫЙ ТЕКСТ РЕГЛАМЕНТА В ЭТОМ ЧАТЕ. ЕСЛИ ПОЛЬЗОВАТЕЛЬ ПРОСИТ ВЫВЕСТИ РЕГЛАМЕНТ, СКАЖИ, ЧТО ОН БУДЕТ СФОРМИРОВАН В ПРАВОЙ ПАНЕЛИ, И СПРОСИ, ГОТОВ ЛИ ОН К ГЕНЕРАЦИИ.`,
     });
   }
   

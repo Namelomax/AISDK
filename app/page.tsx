@@ -51,6 +51,24 @@ export default function ChatPage() {
     regenerate({ body: { messages: newMessages } });
   };
 
+  const handleEdit = (messageId: string, newContent: string) => {
+    const index = messages.findIndex(m => m.id === messageId);
+    if (index === -1) return;
+    
+    // Create updated message with new content
+    const updatedMessage = {
+      ...messages[index],
+      parts: [{ type: 'text' as const, text: newContent }],
+    };
+    
+    // Keep messages before this one, add the edited message, remove everything after
+    const newMessages = [...messages.slice(0, index), updatedMessage];
+    
+    setMessages(newMessages as any);
+    // Trigger regeneration with the edited message
+    regenerate({ body: { messages: newMessages } });
+  };
+
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -398,6 +416,32 @@ export default function ChatPage() {
       console.error(err);
     }
   };
+
+  const handleDocumentEdit = async (updated: DocumentState) => {
+    setDocument(updated);
+
+    // Update local conversations list state
+    if (conversationId) {
+      setConversationsList((prev) =>
+        prev.map((c) =>
+          c.id === conversationId ? { ...c, document_content: updated.content } : c
+        )
+      );
+    }
+
+    // Persist to backend if conversation is saved
+    if (conversationId && !String(conversationId).startsWith('local-')) {
+      try {
+        await fetch('/api/conversations', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId, messages, documentContent: updated.content }),
+        });
+      } catch (e) {
+        console.warn('Failed to persist document edit', e);
+      }
+    }
+  };
 //asd
   const handleNewLocalConversation = () => {
     if (!authUser?.id) return;
@@ -478,6 +522,7 @@ export default function ChatPage() {
             copiedId={copiedId}
             onRegenerate={handleRegenerate}
             onCopy={handleCopy}
+            onEdit={handleEdit}
           />
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t p-4">
@@ -506,7 +551,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={document} />
+        <DocumentPanel document={document} onEdit={handleDocumentEdit} />
       </div>
     </div>
   );

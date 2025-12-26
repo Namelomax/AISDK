@@ -15,6 +15,7 @@ type ConversationAreaProps = {
   copiedId: string | null;
   onRegenerate: (id: string) => void;
   onCopy: (text: string, id: string) => void;
+  onEdit?: (id: string, newContent: string) => void;
 };
 
 export const ConversationArea = ({
@@ -24,6 +25,7 @@ export const ConversationArea = ({
   copiedId,
   onRegenerate,
   onCopy,
+  onEdit,
 }: ConversationAreaProps) => {
   const lastMessageId = messages.at(-1)?.id;
 
@@ -39,6 +41,7 @@ export const ConversationArea = ({
             copiedId={copiedId}
             onRegenerate={onRegenerate}
             onCopy={onCopy}
+            onEdit={onEdit}
           />
         ))}
 

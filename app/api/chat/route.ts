@@ -3,9 +3,7 @@ import {
   convertToModelMessages, 
 } from 'ai';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
-import { classifyIntent } from './agents/classifier';
-import { runChatAgent } from './agents/chat-agent';
-import { runRegulationAgent } from './agents/regulation-agent';
+import { runMainAgent } from './agents/main-agent';
 import { AgentContext } from './agents/types';
 
 export const maxDuration = 90;
@@ -40,7 +38,14 @@ ${hiddenDocsContext}
 1. Это справочные материалы. НЕ делай их краткий пересказ (summary), если пользователь об этом явно не попросил.
 2. Используй информацию из них только для ответов на конкретные вопросы или выполнения задач пользователя.
 3. Если пользователь не задал вопрос, просто подтверди получение файлов и скажи, что готов работать с ними согласно твоей основной инструкции.
-===== КОНЕЦ ВЛОЖЕНИЙ =====`;
+===== КОНЕЦ ВЛОЖЕНИЙ =====
+
+ИНСТРУКЦИИ ДЛЯ ЧАТ-КАНАЛА:
+- Отвечай в этом канале кратко и по делу, не выводи полный регламент или длинный черновик документа здесь.
+- Если пользователь просит показать/вывести документ или регламент, сообщи, что он появится в правой панели после генерации, и уточни недостающие данные одним коротким вопросом.
+- Если диалог еще собирает данные, продолжай задавать не более одного уточняющего вопроса за раз и подтверждай выводы.
+- Если пользователь не предоставил специальных инструкций (User Prompt), твоя цель — собрать информацию и в конце предложить сгенерировать документ в правой панели.
+`;
 }
 
 async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: string | null): Promise<string> {
@@ -398,13 +403,6 @@ export async function POST(req: Request) {
     model,
   };
 
-  // 6. Classify Intent
-  const intent = await classifyIntent(agentContext);
-
-  // 7. Route to Agent
-  if (intent === 'generate_regulation') {
-    return runRegulationAgent(agentContext);
-  } else {
-    return runChatAgent(agentContext, systemPrompt,userPrompt);
-  }
+  // 6. Run Main Agent
+  return runMainAgent(agentContext, systemPrompt, userPrompt);
 }

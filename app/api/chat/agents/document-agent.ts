@@ -2,7 +2,26 @@ import { streamText, createUIMessageStream, JsonToSseTransformStream } from 'ai'
 import { AgentContext } from './types';
 import { updateConversation, saveConversation } from '@/lib/getPromt';
 
-export async function runRegulationAgent(context: AgentContext) {
+function extractMessageText(msg: any): string {
+  if (!msg) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg?.parts)) {
+    const texts = msg.parts
+      .map((p: any) => (p?.type === 'text' && typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean);
+    if (texts.length) return texts.join(' ');
+  }
+  if (msg?.content && typeof msg.content === 'object') {
+    try {
+      return JSON.stringify(msg.content);
+    } catch (e) {
+      return String(msg.content);
+    }
+  }
+  return '';
+}
+
+export async function runDocumentAgent(context: AgentContext) {
   const { messages, model, userPrompt, documentContent, userId, conversationId } = context;
   let generatedDocumentContent = '';
 
@@ -10,7 +29,7 @@ export async function runRegulationAgent(context: AgentContext) {
     originalMessages: messages as any,
     execute: async ({ writer }) => {
       try {
-        generatedDocumentContent = await generateFinalRegulation(
+        generatedDocumentContent = await generateFinalDocument(
           messages,
           userPrompt,
           writer,
@@ -18,12 +37,12 @@ export async function runRegulationAgent(context: AgentContext) {
           documentContent
         );
       } catch (error) {
-        console.error('Regulation generation error:', error);
+        console.error('Document generation error:', error);
         writer.write({ type: 'text-start', id: 'error' });
         writer.write({
           type: 'text-delta',
           id: 'error',
-          delta: 'Произошла ошибка при формировании регламента. Попробуйте снова.',
+          delta: 'Произошла ошибка при формировании документа. Попробуйте снова.',
         });
         writer.write({ type: 'text-end', id: 'error' });
       }
@@ -37,7 +56,7 @@ export async function runRegulationAgent(context: AgentContext) {
             await saveConversation(userId, finished, generatedDocumentContent);
           }
         } catch (e) {
-          console.error('generate_regulation persistence failed', e);
+          console.error('document persistence failed', e);
         }
       }
     }
@@ -47,7 +66,7 @@ export async function runRegulationAgent(context: AgentContext) {
   return new Response(readable, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-async function generateFinalRegulation(
+async function generateFinalDocument(
   messages: any[], 
   userPrompt: string | null,
   dataStream: any,
@@ -56,9 +75,10 @@ async function generateFinalRegulation(
 ): Promise<string> {
   const conversationContext = messages
     .map((msg) => {
-      const text = msg.content || msg.parts?.find((p: any) => p.type === 'text')?.text || '';
-      return `${msg.role}: ${text}`;
+      const text = extractMessageText(msg);
+      return text ? `${msg.role}: ${text}` : '';
     })
+    .filter(Boolean)
     .join('\n');
 
   // === STATE INJECTION ===
@@ -69,14 +89,25 @@ async function generateFinalRegulation(
     // If user has a custom prompt, use ONLY that as the main instruction
     directive = `${userPrompt}
 
-=== КОНТЕКСТ ЗАДАЧИ ===
-История диалога ниже содержит всю информацию для формирования документа.`;
+  === ДАННЫЕ ДЛЯ ДОКУМЕНТА (ИСТОРИЯ ДИАЛОГА) ===
+  ${conversationContext}
+
+  === ВЫВОД ===
+  Сформируй ПОЛНЫЙ документ по инструкции выше. В ответе не задавай вопросов, не добавляй приветствий и пояснений.
+  Первая строка ответа — заголовок с символом # (например, "# Регламент ...").
+  Затем выведи весь текст документа. Никаких списков действий, сообщений ассистента или пояснений — только итоговый документ.
+  Если данных мало, выведи краткий документ из того, что есть, без заглушек "информация не предоставлена".`;
   } else {
     // Fallback minimal instruction if no user prompt
     directive = `Сформируй документ на основе всей истории диалога.
-Первой строкой напиши заголовок документа, начиная с символа # (например: "# Регламент проведения...").
-Используй ТОЛЬКО факты из переписки.
-Никаких кодовых блоков и тройных кавычек.`;
+  Первая строка — заголовок с символом # (например: "# Регламент проведения...").
+  Используй ТОЛЬКО факты из переписки.
+  История диалога:
+  ${conversationContext}
+
+  Выведи только финальный документ: без вопросов, без приветствий, без пояснений.
+  Если данных мало, выведи краткий документ из того, что есть, без заглушек "информация не предоставлена".
+  Никаких кодовых блоков и тройных кавычек.`;
   }
 
   if (existingDocument && existingDocument.trim().length > 20) {
@@ -91,8 +122,7 @@ ${existingDocument}
 `;
   }
 
-  directive += `\n\nИстория диалога:
-${conversationContext}`;
+  // История диалога уже включена выше
 
   const stream = await streamText({
     model,
@@ -177,8 +207,8 @@ ${conversationContext}`;
   }
 
   if (!hasEmittedContent) {
-    const fallback = fullContent.trim() || '*Информация не предоставлена в диалоге.*';
-    dataStream.write({ type: 'data-documentDelta', data: fallback });
+    const fallbackSource = conversationContext.trim() || '*Информация не предоставлена в диалоге.*';
+    dataStream.write({ type: 'data-documentDelta', data: fallbackSource });
   }
 
   dataStream.write({ type: 'data-finish', data: null });

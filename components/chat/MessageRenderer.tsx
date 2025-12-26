@@ -5,7 +5,7 @@ import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
-import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon } from 'lucide-react';
+import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon, Pencil, X, Send } from 'lucide-react';
 
 const ToolsDisplay = ({ tools, isStreaming }: { tools: any[]; isStreaming: boolean }) => {
   const [isOpen, setIsOpen] = useState(true);
@@ -48,6 +48,7 @@ type MessageRendererProps = {
   copiedId: string | null;
   onRegenerate: (id: string) => void;
   onCopy: (text: string, id: string) => void;
+  onEdit?: (id: string, newContent: string) => void;
 };
 
 const sanitizeUserText = (text: string) => {
@@ -168,7 +169,11 @@ export const MessageRenderer = ({
   copiedId,
   onRegenerate,
   onCopy,
+  onEdit,
 }: MessageRendererProps) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState('');
+
   const attachments: Attachment[] = Array.isArray(message?.metadata?.attachments)
     ? message.metadata.attachments
     : Array.isArray(message?.parts)
@@ -259,9 +264,81 @@ export const MessageRenderer = ({
 
         {toolParts.length > 0 && <ToolsDisplay tools={toolParts} isStreaming={isToolsStreaming} />}
 
-        {textParts.length > 0 && status !== 'streaming' && (
+        {/* Edit mode for user messages */}
+        {isEditing && message.role === 'user' && (
+          <div className="w-full space-y-2">
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              className="w-full min-h-[100px] p-3 border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (onEdit && editText.trim()) {
+                    onEdit(message.id, editText.trim());
+                    setIsEditing(false);
+                  }
+                }}
+                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+              >
+                <Send className="size-3" />
+                Отправить
+              </button>
+              <button
+                onClick={() => setIsEditing(false)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 text-sm"
+              >
+                <X className="size-3" />
+                Отмена
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Actions for user messages */}
+        {message.role === 'user' && textParts.length > 0 && status !== 'streaming' && !isEditing && (
           <Actions>
-            <Action onClick={() => onRegenerate(message.id)} label="Retry">
+            {onEdit && (
+              <Action
+                onClick={() => {
+                  const text = textParts
+                    .map((part: any) => {
+                      const { visible } = sanitizeUserText(part.text);
+                      return visible || part.text;
+                    })
+                    .join('\n');
+                  setEditText(text);
+                  setIsEditing(true);
+                }}
+                tooltip="Редактировать"
+                label="Edit"
+              >
+                <Pencil className="size-3" />
+              </Action>
+            )}
+            <Action
+              onClick={() => {
+                const text = textParts
+                  .map((part: any) => {
+                    const { visible } = sanitizeUserText(part.text);
+                    return visible || part.text;
+                  })
+                  .join('\n');
+                onCopy(text, message.id);
+              }}
+              label={copiedId === message.id ? 'Скопировано!' : 'Copy'}
+            >
+              {copiedId === message.id ? <Check className="size-3" /> : <Copy className="size-3" />}
+            </Action>
+          </Actions>
+        )}
+
+        {/* Actions for assistant messages */}
+        {message.role === 'assistant' && textParts.length > 0 && status !== 'streaming' && (
+          <Actions>
+            <Action onClick={() => onRegenerate(message.id)} tooltip="Перегенерировать" label="Retry">
               <RefreshCcw className="size-3" />
             </Action>
             <Action
