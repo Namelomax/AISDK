@@ -10,17 +10,11 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
   // Берем достаточно контекста для понимания стадии диалога
   const conversationContext = messages.slice(-12);
   const lastUserMessage = messages[messages.length - 1]?.content ?? '';
-  
-  // Извлекаем последние сообщения ассистента для понимания текущего состояния
-  const lastAssistantMessages = messages
-    .slice(-5)
-    .filter(m => m.role === 'assistant')
-    .map(m => m.content);
 
   try {
     const { object: intentObj } = await generateObject({
       model,
-      temperature: 0.4,
+      temperature: 0.1,
       schema: z.object({
         type: z.enum(['chat', 'document']),
         confidence: z.number().min(0).max(1),
@@ -94,7 +88,6 @@ ${conversationContext.map((msg, i) => {
     return intentObj.type;
   } catch (err) {
     console.error('Intent classification failed:', err);
-    // В случае ошибки возвращаем chat как безопасный вариант
     return 'chat';
   }
 }
