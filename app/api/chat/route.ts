@@ -2,6 +2,7 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { 
   convertToModelMessages, 
 } from 'ai';
+import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { runMainAgent } from './agents/main-agent';
 import { AgentContext } from './agents/types';
@@ -19,6 +20,8 @@ const openrouter = createOpenRouter({
   },
 });
 
+// Включаем reasoning у модели по умолчанию: OpenRouter прокидывает этот флаг дальше в модель
+// (для mimo-v2-flash reasoning заявлен в capabilities). budget_tokens можно отрегулировать при необходимости.
 const model = openrouter.chat('xiaomi/mimo-v2-flash:free');
 
 let cachedPrompt: string | null = null;
@@ -90,22 +93,50 @@ async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   }
 }
 
-async function extractDocxTextFromAttachment(att: any): Promise<string | null> {
-  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return null;
-  const buf = dataUrlToBuffer(att.url || att.data);
+async function extractWithTextract(att: any, extHint?: string): Promise<string | null> {
+  const buf = dataUrlToBuffer(att?.url || att?.data);
   if (!buf) return null;
   try {
-    const mammoth = await import('mammoth');
-    const result = await mammoth.extractRawText({ buffer: buf });
-    return result.value.trim() || null;
+    const textract = await import('textract');
+    const ext = extHint || (att?.name || att?.filename || '').split('.').pop();
+    const text = await new Promise<string>((resolve, reject) => {
+      textract.fromBufferWithMime(att.mediaType || att.mimeType || '', buf, { typeOverride: ext } as any, (err: any, res: string) => {
+        if (err) return reject(err);
+        resolve(res || '');
+      });
+    });
+    const cleaned = (text || '').trim();
+    return cleaned || null;
   } catch (error) {
-    console.error('Failed to parse DOCX attachment:', error);
+    console.error('textract parse failed:', error);
     return null;
   }
 }
 
+async function extractDocText(att: any): Promise<string | null> {
+  const mt = att?.mediaType || att?.mimeType || '';
+  const isDocx = mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const buf = dataUrlToBuffer(att?.url || att?.data);
+  if (!buf) return null;
+
+      if (isDocx) {
+        try {
+          const mammoth = await import('mammoth');
+          const result = await mammoth.extractRawText({ buffer: buf });
+          const cleaned = result.value.trim();
+          if (cleaned) return cleaned;
+        } catch (error) {
+          console.error('Failed to parse DOCX via mammoth:', error);
+        }
+      }
+
+  // Fallback to textract for DOC/DOCX and other edge cases
+  return extractWithTextract(att, isDocx ? 'docx' : 'doc');
+}
+
 async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
-  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return null;
+  // Поддерживаем XLSX и старые XLS (application/vnd.ms-excel)
+  if (!att || (att.mediaType !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && att.mediaType !== 'application/vnd.ms-excel')) return extractWithTextract(att, 'xls');
   const buf = dataUrlToBuffer(att.url || att.data);
   if (!buf) return null;
   try {
@@ -118,45 +149,54 @@ async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
       text += XLSX.utils.sheet_to_txt(sheet);
       text += '\n\n';
     });
-    return text.trim() || null;
+    const cleaned = text.trim();
+    if (cleaned) return cleaned;
   } catch (error) {
     console.error('Failed to parse XLSX attachment:', error);
-    return null;
   }
+  return extractWithTextract(att, 'xls');
 }
 
 async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
-  if (!att || att.mediaType !== 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return null;
+  // Поддерживаем PPTX и best-effort для PPT (application/vnd.ms-powerpoint)
+  if (!att) return null;
+  const mt = att.mediaType || att.mimeType;
+  const isPptx = mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  const isPpt = mt === 'application/vnd.ms-powerpoint';
   const buf = dataUrlToBuffer(att.url || att.data);
   if (!buf) return null;
-  try {
-    const JSZip = (await import('jszip')).default;
-    const zip = await JSZip.loadAsync(buf);
-    const slideFiles = Object.keys(zip.files).filter(name => name.match(/^ppt\/slides\/slide\d+\.xml$/));
-    
-    slideFiles.sort((a, b) => {
-      const numA = parseInt(a.match(/slide(\d+)\.xml$/)?.[1] || '0');
-      const numB = parseInt(b.match(/slide(\d+)\.xml$/)?.[1] || '0');
-      return numA - numB;
-    });
 
-    let text = '';
-    for (const fileName of slideFiles) {
-      const content = await zip.file(fileName)?.async('string');
-      if (content) {
-        const slideText = content.match(/<a:t>(.*?)<\/a:t>/g)
-          ?.map(t => t.replace(/<\/?a:t>/g, ''))
-          .join(' ') || '';
-        if (slideText.trim()) {
-          text += `Slide ${fileName.match(/slide(\d+)\.xml$/)?.[1]}:\n${slideText}\n\n`;
+  if (isPptx) {
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = await JSZip.loadAsync(buf);
+      const slideFiles = Object.keys(zip.files).filter(name => name.match(/^ppt\/slides\/slide\d+\.xml$/));
+      slideFiles.sort((a, b) => {
+        const numA = parseInt(a.match(/slide(\d+)\.xml$/)?.[1] || '0');
+        const numB = parseInt(b.match(/slide(\d+)\.xml$/)?.[1] || '0');
+        return numA - numB;
+      });
+
+      let text = '';
+      for (const fileName of slideFiles) {
+        const content = await zip.file(fileName)?.async('string');
+        if (content) {
+          const slideText = content.match(/<a:t>(.*?)<\/a:t>/g)
+            ?.map(t => t.replace(/<\/?a:t>/g, ''))
+            .join(' ') || '';
+          if (slideText.trim()) {
+            text += `Slide ${fileName.match(/slide(\d+)\.xml$/)?.[1]}:\n${slideText}\n\n`;
+          }
         }
       }
+      const cleaned = text.trim();
+      if (cleaned) return cleaned;
+    } catch (error) {
+      console.error('Failed to parse PPTX attachment:', error);
     }
-    return text.trim() || null;
-  } catch (error) {
-    console.error('Failed to parse PPTX attachment:', error);
-    return null;
   }
+
+  return extractWithTextract(att, isPpt ? 'ppt' : 'pptx');
 }
 
 // === MAIN HANDLER ===
@@ -272,31 +312,56 @@ export async function POST(req: Request) {
     };
   });
 
-  console.log('✅ Normalized messages:', normalizedMessages.length);
+  // Drop completely empty messages to avoid provider errors (content/parts must exist)
+  const normalizedMessagesNonEmpty = normalizedMessages.filter((m) => {
+    const text = typeof m.content === 'string' ? m.content.trim() : '';
+    return Boolean(text);
+  });
 
-  // 3. Process Attachments (PDF/DOCX/etc)
-  for (const msg of normalizedMessages) {
+  if (normalizedMessages.length !== normalizedMessagesNonEmpty.length) {
+    console.warn('Filtered empty messages:', normalizedMessages.length - normalizedMessagesNonEmpty.length);
+  }
+
+  console.log('✅ Normalized messages:', normalizedMessagesNonEmpty.length);
+
+  // 3. Process Attachments
+  for (const msg of normalizedMessagesNonEmpty) {
     const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
-    
-    const pdfs = atts.filter((a) => a?.mediaType === 'application/pdf');
-    const docxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    const xlsxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    const pptxs = atts.filter((a) => a?.mediaType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    if (!atts.length) continue;
 
-    if (!pdfs.length && !docxs.length && !xlsxs.length && !pptxs.length) continue;
+    const collected: string[] = [];
 
-    const pdfTexts = await Promise.all(pdfs.map(extractPdfTextFromAttachment));
-    const docxTexts = await Promise.all(docxs.map(extractDocxTextFromAttachment));
-    const xlsxTexts = await Promise.all(xlsxs.map(extractXlsxTextFromAttachment));
-    const pptxTexts = await Promise.all(pptxs.map(extractPptxTextFromAttachment));
+    for (const att of atts) {
+      const name = att?.name || att?.filename || 'документ';
+      const mt = att?.mediaType || att?.mimeType || 'unknown';
+      let extracted: string | null = null;
 
-    const allTexts = [...pdfTexts, ...docxTexts, ...xlsxTexts, ...pptxTexts].filter((t): t is string => Boolean(t && t.trim()));
+      try {
+        if (mt === 'application/pdf') {
+          extracted = await extractPdfTextFromAttachment(att);
+        } else if (mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mt === 'application/msword') {
+          extracted = await extractDocText(att);
+        } else if (mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mt === 'application/vnd.ms-excel') {
+          extracted = await extractXlsxTextFromAttachment(att);
+        } else if (mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mt === 'application/vnd.ms-powerpoint') {
+          extracted = await extractPptxTextFromAttachment(att);
+        }
+      } catch (err) {
+        console.error('Failed to parse attachment', name, mt, err);
+      }
 
-    if (allTexts.length) {
+      if (extracted && extracted.trim()) {
+        collected.push(extracted.trim());
+      } else {
+        collected.push(`Файл "${name}": текст не извлечён (тип ${mt}).`);
+      }
+    }
+
+    if (collected.length) {
       msg.metadata = {
         ...(msg.metadata || {}),
         attachments: atts,
-        hiddenTexts: [...(msg.metadata?.hiddenTexts || []), ...allTexts],
+        hiddenTexts: [...(msg.metadata?.hiddenTexts || []), ...collected],
       };
     }
   }
@@ -308,7 +373,7 @@ export async function POST(req: Request) {
   const hiddenDocEntries: string[] = [];
   const messagesWithHidden: any[] = [];
   
-  normalizedMessages.forEach((msg) => {
+  normalizedMessagesNonEmpty.forEach((msg) => {
     const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
       ? (msg as any).metadata.hiddenTexts
       : [];
@@ -351,14 +416,14 @@ export async function POST(req: Request) {
 
   console.log('📦 Messages prepared:', {
     messagesWithHidden: messagesWithHidden.length,
-    normalizedMessages: normalizedMessages.length,
+    normalizedMessages: normalizedMessagesNonEmpty.length,
     hiddenDocEntries: hiddenDocEntries.length,
   });
 
   // 5. Create Agent Context - with safety checks
   let coreMessages;
   try {
-    const messagesToConvert = messagesWithHidden.length > 0 ? messagesWithHidden : normalizedMessages;
+    const messagesToConvert = messagesWithHidden.length > 0 ? messagesWithHidden : normalizedMessagesNonEmpty;
     console.log('🔄 Converting messages:', messagesToConvert.length);
     
     if (!Array.isArray(messagesToConvert) || messagesToConvert.length === 0) {
@@ -369,9 +434,9 @@ export async function POST(req: Request) {
     console.log('✅ Messages converted successfully');
   } catch (error) {
     console.error('❌ Failed to convert messages:', error);
-    console.error('Messages data:', JSON.stringify({ messagesWithHidden, normalizedMessages }, null, 2));
+    console.error('Messages data:', JSON.stringify({ messagesWithHidden, normalizedMessages: normalizedMessagesNonEmpty }, null, 2));
     // Fallback: try to preserve at least the last user message
-    const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+    const lastMessage = normalizedMessagesNonEmpty[normalizedMessagesNonEmpty.length - 1];
     coreMessages = lastMessage ? [{
       role: lastMessage.role as 'user' | 'assistant',
       content: typeof lastMessage.content === 'string' ? lastMessage.content : 'Hello',
