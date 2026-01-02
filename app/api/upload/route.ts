@@ -3,6 +3,69 @@ const GEMINI_UPLOAD_URL = `https://generativelanguage.googleapis.com/upload/v1be
 
 export const runtime = "nodejs";
 
+function bestEffortBinaryText(buf: Buffer): string | null {
+  if (!buf || buf.length < 8) return null;
+
+  const candidates: string[] = [];
+  try {
+    candidates.push(buf.toString('utf8'));
+  } catch {}
+  try {
+    candidates.push(buf.toString('utf16le'));
+  } catch {}
+  try {
+    candidates.push(buf.toString('latin1'));
+  } catch {}
+
+  const clean = (raw: string) =>
+    String(raw ?? '')
+      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]+/g, ' ')
+      .replace(/\u0000+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+  const extractReadableRuns = (text: string) => {
+    const runs = text.match(/[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\s.,:;!?()\[\]"'«»\-–—\/\\]{40,}/g);
+    if (!runs?.length) return '';
+    return runs.map((r) => clean(r)).filter(Boolean).join('\n');
+  };
+
+  let best = '';
+  for (const c of candidates) {
+    const runs = extractReadableRuns(c);
+    if (runs.length > best.length) best = runs;
+  }
+
+  const cleaned = clean(best);
+  return cleaned.length >= 40 ? cleaned : null;
+}
+
+async function extractWithTextract(buf: Buffer, mimeType: string, extHint: string): Promise<string | null> {
+  try {
+    const textract = (() => {
+      try {
+        // eslint-disable-next-line no-eval
+        const req = eval('require');
+        return req('textract');
+      } catch {
+        return null;
+      }
+    })();
+    if (!textract) return null;
+    const text = await new Promise<string>((resolve, reject) => {
+      textract.fromBufferWithMime(mimeType || '', buf, { typeOverride: extHint } as any, (err: any, res: string) => {
+        if (err) return reject(err);
+        resolve(res || '');
+      });
+    });
+    const cleaned = (text || '').trim();
+    return cleaned || null;
+  } catch (err) {
+    console.error('textract upload parse failed:', err);
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   const formData = await req.formData();
   const file = formData.get("file") as File;
@@ -27,6 +90,30 @@ export async function POST(req: Request) {
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer });
       extractedText = result.value;
+    } else if (file.name.endsWith('.xls') || file.name.endsWith('.xlsx') || contentType === 'application/vnd.ms-excel' || contentType.includes('spreadsheetml')) {
+      try {
+        const XLSX = await import('xlsx');
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        let text = '';
+        workbook.SheetNames.forEach((sheetName: string) => {
+          const sheet = (workbook as any).Sheets[sheetName];
+          text += `Sheet: ${sheetName}\n`;
+          text += (XLSX as any).utils.sheet_to_txt(sheet);
+          text += '\n\n';
+        });
+        extractedText = text.trim() || null;
+      } catch (err) {
+        extractedText = null;
+      }
+      if (!extractedText) {
+        extractedText = await extractWithTextract(buffer, contentType, file.name.endsWith('.xls') ? 'xls' : 'xlsx');
+      }
+    } else if (file.name.endsWith('.doc') || contentType === 'application/msword') {
+      extractedText = await extractWithTextract(buffer, contentType, 'doc');
+      if (!extractedText) extractedText = bestEffortBinaryText(buffer);
+    } else if (file.name.endsWith('.ppt') || file.name.endsWith('.pptx') || contentType === 'application/vnd.ms-powerpoint' || contentType.includes('presentationml')) {
+      extractedText = await extractWithTextract(buffer, contentType, file.name.endsWith('.ppt') ? 'ppt' : 'pptx');
+      if (!extractedText) extractedText = bestEffortBinaryText(buffer);
     }
   } catch (err) {
     console.error('Local text extraction failed:', err);

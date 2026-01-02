@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { DocumentPanel, DocumentState } from '@/components/document/DocumentPanel';
+import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
 import { PromptsManager } from './api/promts/PromtsManager';
 import { Header } from '@/components/chat/Header';
 import { Sidebar } from '@/components/chat/Sidebar';
@@ -126,6 +127,16 @@ export default function ChatPage() {
         setDocument((prev) => ({
           ...prev,
           content: prev.content + dataPart.data,
+        }));
+      }
+
+      if (dataPart.type === 'data-documentPatch') {
+        const patch = dataPart.data as DocumentPatch;
+        setDocument((prev) => ({
+          ...prev,
+          // Apply patch without clearing the document
+          content: applyDocumentPatches(prev.content || '', [patch]),
+          isStreaming: true,
         }));
       }
 

@@ -79,6 +79,50 @@ function dataUrlToBuffer(dataUrl?: string | null): Buffer | null {
   }
 }
 
+function guessFileExt(att: any): string {
+  const name = String(att?.name || att?.filename || '').trim();
+  const m = name.match(/\.([A-Za-z0-9]+)$/);
+  return (m?.[1] ?? '').toLowerCase();
+}
+
+function bestEffortBinaryText(buf: Buffer): string | null {
+  if (!buf || buf.length < 8) return null;
+
+  const candidates: string[] = [];
+  try {
+    candidates.push(buf.toString('utf8'));
+  } catch {}
+  try {
+    candidates.push(buf.toString('utf16le'));
+  } catch {}
+  try {
+    candidates.push(buf.toString('latin1'));
+  } catch {}
+
+  const clean = (raw: string) =>
+    String(raw ?? '')
+      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]+/g, ' ')
+      .replace(/\u0000+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+  // Keep long-ish runs of readable characters (Latin/Cyrillic/digits/punct)
+  const extractReadableRuns = (text: string) => {
+    const runs = text.match(/[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\s.,:;!?()\[\]"'«»\-–—\/\\]{40,}/g);
+    if (!runs?.length) return '';
+    return runs.map((r) => clean(r)).filter(Boolean).join('\n');
+  };
+
+  let best = '';
+  for (const c of candidates) {
+    const runs = extractReadableRuns(c);
+    if (runs.length > best.length) best = runs;
+  }
+
+  const cleaned = clean(best);
+  return cleaned.length >= 40 ? cleaned : null;
+}
+
 async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   if (!att || att.mediaType !== 'application/pdf') return null;
   const buf = dataUrlToBuffer(att.url || att.data);
@@ -97,8 +141,19 @@ async function extractWithTextract(att: any, extHint?: string): Promise<string |
   const buf = dataUrlToBuffer(att?.url || att?.data);
   if (!buf) return null;
   try {
-    const textract = await import('textract');
-    const ext = extHint || (att?.name || att?.filename || '').split('.').pop();
+    // Optional dependency: keep API route working even when textract isn't installed.
+    // Use eval('require') so Next doesn't try to resolve the module at build time.
+    const textract = (() => {
+      try {
+        // eslint-disable-next-line no-eval
+        const req = eval('require');
+        return req('textract');
+      } catch {
+        return null;
+      }
+    })();
+    if (!textract) return null;
+    const ext = extHint || guessFileExt(att);
     const text = await new Promise<string>((resolve, reject) => {
       textract.fromBufferWithMime(att.mediaType || att.mimeType || '', buf, { typeOverride: ext } as any, (err: any, res: string) => {
         if (err) return reject(err);
@@ -130,8 +185,10 @@ async function extractDocText(att: any): Promise<string | null> {
         }
       }
 
-  // Fallback to textract for DOC/DOCX and other edge cases
-  return extractWithTextract(att, isDocx ? 'docx' : 'doc');
+  // Legacy DOC: try textract, then best-effort binary text
+  const extracted = await extractWithTextract(att, isDocx ? 'docx' : 'doc');
+  if (extracted?.trim()) return extracted.trim();
+  return bestEffortBinaryText(buf);
 }
 
 async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
@@ -196,7 +253,10 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
     }
   }
 
-  return extractWithTextract(att, isPpt ? 'ppt' : 'pptx');
+  const extracted = await extractWithTextract(att, isPpt ? 'ppt' : 'pptx');
+  if (extracted?.trim()) return extracted.trim();
+  // Legacy PPT often needs external tools; fall back to best-effort readable runs.
+  return bestEffortBinaryText(buf);
 }
 
 // === MAIN HANDLER ===
@@ -334,6 +394,7 @@ export async function POST(req: Request) {
     for (const att of atts) {
       const name = att?.name || att?.filename || 'документ';
       const mt = att?.mediaType || att?.mimeType || 'unknown';
+      const ext = guessFileExt(att);
       let extracted: string | null = null;
 
       try {
@@ -344,6 +405,12 @@ export async function POST(req: Request) {
         } else if (mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mt === 'application/vnd.ms-excel') {
           extracted = await extractXlsxTextFromAttachment(att);
         } else if (mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mt === 'application/vnd.ms-powerpoint') {
+          extracted = await extractPptxTextFromAttachment(att);
+        } else if (ext === 'doc' || ext === 'docx') {
+          extracted = await extractDocText(att);
+        } else if (ext === 'xls' || ext === 'xlsx') {
+          extracted = await extractXlsxTextFromAttachment(att);
+        } else if (ext === 'ppt' || ext === 'pptx') {
           extracted = await extractPptxTextFromAttachment(att);
         }
       } catch (err) {
