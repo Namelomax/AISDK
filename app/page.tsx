@@ -87,6 +87,15 @@ export default function ChatPage() {
     }));
   }
 
+  function getLastAssistantId(uiMessages: any[]): string | null {
+    if (!Array.isArray(uiMessages)) return null;
+    for (let i = uiMessages.length - 1; i >= 0; i--) {
+      const m = uiMessages[i];
+      if (m?.role === 'assistant' && m?.id) return String(m.id);
+    }
+    return null;
+  }
+
   const transport = useMemo(() => {
     const base = '/api/chat';
     const params: string[] = [];
@@ -226,7 +235,9 @@ export default function ChatPage() {
             
             if (activeConv) {
               setConversationId(activeConv.id);
-              setMessages(toUIMessages(activeConv.messages));
+              const hydrated = toUIMessages(activeConv.messages);
+              setLastSavedAssistantId(getLastAssistantId(hydrated));
+              setMessages(hydrated);
               
               // Restore document content
               if (activeConv.document_content) {
@@ -283,7 +294,9 @@ export default function ChatPage() {
             const first = convs[0];
             if (first) {
               setConversationId(first.id ?? null);
-              setMessages(toUIMessages(first.messages));
+              const hydrated = toUIMessages(first.messages);
+              setLastSavedAssistantId(getLastAssistantId(hydrated));
+              setMessages(hydrated);
               
               // Restore document content on login
               if (first.document_content) {
@@ -479,7 +492,9 @@ export default function ChatPage() {
   const handleSelectConversation = (conversation: any) => {
     if (!conversation?.id) return;
     setConversationId(conversation.id);
-    setMessages(toUIMessages(conversation.messages));
+    const hydrated = toUIMessages(conversation.messages);
+    setLastSavedAssistantId(getLastAssistantId(hydrated));
+    setMessages(hydrated);
     
     // Load document content if available
     if (conversation.document_content) {

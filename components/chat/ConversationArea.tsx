@@ -7,6 +7,24 @@ import {
 } from '@/components/ai-elements/conversation';
 import { Loader } from '@/components/ai-elements/loader';
 import { MessageRenderer } from '@/components/chat/MessageRenderer';
+import { useStickToBottomContext } from 'use-stick-to-bottom';
+import { useEffect } from 'react';
+
+const AutoScrollOnUpdates = ({ deps }: { deps: unknown }) => {
+  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
+
+  useEffect(() => {
+    if (!isAtBottom) return;
+
+    const raf = requestAnimationFrame(() => {
+      scrollToBottom({ animation: 'instant' });
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [deps, isAtBottom, scrollToBottom]);
+
+  return null;
+};
 
 type ConversationAreaProps = {
   chatKey: string;
@@ -46,6 +64,8 @@ export const ConversationArea = ({
         ))}
 
         {status === 'submitted' && <Loader />}
+
+        <AutoScrollOnUpdates deps={messages} />
       </ConversationContent>
       <ConversationScrollButton />
     </Conversation>
