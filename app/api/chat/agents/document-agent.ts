@@ -148,6 +148,7 @@ async function generateFinalDocument(
   dataStream: any,
   model: any,
   existingDocument?: string,
+  temperature: number = 0.1,
 ): Promise<string> {
   const lastUserTextRaw = (() => {
     const lastUser = [...(messages || [])].reverse().find((m) => m?.role === 'user');
@@ -243,7 +244,8 @@ async function generateFinalDocument(
         .array(
           z.object({
             heading: z.string().min(1),
-            mode: z.enum(['replace', 'append', 'delete']).optional(),
+            mode: z.enum(['replace', 'append', 'delete', 'rename']).optional(),
+            newHeading: z.string().optional(),
             instructions: z.string().min(1),
           })
         )
@@ -258,7 +260,7 @@ async function generateFinalDocument(
 - Сначала верни ПЛАН правок (без текста разделов), чтобы затем можно было сгенерировать тело раздела потоково.
 
 ФОРМАТ JSON:
-{"patches":[{"heading":"<заголовок раздела>","mode":"replace|append|delete","instructions":"<что именно изменить в этом разделе>"}]}
+{"patches":[{"heading":"<существующий заголовок раздела>","mode":"replace|append|delete|rename","newHeading":"<новый заголовок для rename>","instructions":"<что именно изменить в этом разделе>"}]}
 
 ПРАВИЛА:
 - heading должен соответствовать существующему заголовку раздела в документе (текст заголовка без изменений).
@@ -266,7 +268,9 @@ async function generateFinalDocument(
   - "append" — если нужно ДОБАВИТЬ пункт/абзац/подпункт.
   - "replace" — если нужно ПЕРЕПИСАТЬ содержимое раздела.
   - "delete" — если нужно УДАЛИТЬ раздел целиком.
+  - "rename" — если нужно изменить ТОЛЬКО НАЗВАНИЕ пункта/раздела (переименовать строку заголовка), НЕ трогая тело и подпункты.
 - instructions: одно-два предложения, максимально конкретно.
+- Если mode=rename, ОБЯЗАТЕЛЬНО заполни newHeading (можно сохранить нумерацию вроде "1.1" и поменять только текст).
 - Если пользователь просит добавить «пункт 2.1» — выбирай родительский раздел и mode=append.
 - Если пользователь просит ВЕРНУТЬ/ВОССТАНОВИТЬ пункт, которого сейчас НЕТ — выбирай родительский раздел и mode=append.
 - Если пользователь просит добавить пункт N.M — НЕ добавляй/не дублируй уже существующий пункт N.M. Если он уже есть, тогда mode=replace и instructions должны описывать ИЗМЕНЕНИЕ существующего пункта, а не повтор.
@@ -283,7 +287,7 @@ ${effectiveEditText}
 
     const { object: plan } = await generateObject({
       model,
-      temperature: 0.1,
+      temperature,
       schema: planSchema,
       prompt: planPrompt,
     });
@@ -299,8 +303,27 @@ ${effectiveEditText}
     // 2) Stream patch bodies from the model as tokens arrive (no artificial delays)
     for (const planned of plan.patches) {
       const heading = planned.heading;
-      const mode: 'replace' | 'append' | 'delete' =
-        planned.mode === 'append' ? 'append' : planned.mode === 'delete' ? 'delete' : 'replace';
+      const mode: 'replace' | 'append' | 'delete' | 'rename' =
+        planned.mode === 'append'
+          ? 'append'
+          : planned.mode === 'delete'
+            ? 'delete'
+            : planned.mode === 'rename'
+              ? 'rename'
+              : 'replace';
+
+      if (mode === 'rename') {
+        const newHeading = String((planned as any).newHeading ?? '').trim();
+        if (!newHeading) {
+          // Safer to do nothing than to rewrite the section and risk losing nested items.
+          continue;
+        }
+        const patch: DocumentPatch = { heading, mode: 'rename', content: '', newHeading };
+        dataStream.write({ type: 'data-documentPatch', data: patch });
+        finalPatches.push(patch);
+        workingDocument = applyDocumentPatches(workingDocument, [patch]);
+        continue;
+      }
 
       if (mode === 'delete') {
         const patch: DocumentPatch = { heading, mode: 'delete', content: '' };
@@ -344,7 +367,7 @@ ${effectiveEditText}
 
       const stream = await streamText({
         model,
-        temperature: 0.1,
+        temperature,
         messages: [{ role: 'user', content: contentPrompt }],
       });
 
@@ -445,7 +468,7 @@ ${existingDocument}
 
   const stream = await streamText({
     model,
-    temperature: 0.1,
+    temperature,
     messages: [
       {
         role: 'user',

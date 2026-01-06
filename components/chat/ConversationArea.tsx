@@ -1,5 +1,7 @@
 'use client';
 
+import { useMemo } from 'react';
+
 import {
   Conversation,
   ConversationContent,
@@ -45,12 +47,29 @@ export const ConversationArea = ({
   onCopy,
   onEdit,
 }: ConversationAreaProps) => {
-  const lastMessageId = messages.at(-1)?.id;
+  const normalizedMessages = useMemo(() => {
+    const list = Array.isArray(messages) ? messages : [];
+    const seen = new Set<string>();
+    const result: any[] = [];
+    for (const msg of list) {
+      const id = msg?.id ? String(msg.id) : '';
+      if (!id) {
+        result.push(msg);
+        continue;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      result.push(msg);
+    }
+    return result;
+  }, [messages]);
+
+  const lastMessageId = normalizedMessages.at(-1)?.id;
 
   return (
     <Conversation key={chatKey}>
       <ConversationContent>
-        {messages.map((message) => (
+        {normalizedMessages.map((message) => (
           <MessageRenderer
             key={message.id}
             message={message}

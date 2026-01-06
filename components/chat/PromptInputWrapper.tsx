@@ -1,6 +1,6 @@
 'use client';
 
-import { Dispatch, SetStateAction, FormEvent } from 'react';
+import { Dispatch, SetStateAction, FormEvent, useCallback, useRef, useState } from 'react';
 import { FileUIPart } from 'ai';
 import {
   PromptInput,
@@ -15,7 +15,7 @@ import {
   PromptInputMessage,
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
-import { extractTextFromFileUIPart, isTextExtractable } from '@/lib/utils';
+import { isTextExtractable } from '@/lib/utils';
 
 const AttachmentsSection = () => {
   const attachments = usePromptInputAttachments();
@@ -29,17 +29,28 @@ const AttachmentsSection = () => {
   );
 };
 
-const SubmitButton = ({ status, input, onStop }: { status: string; input: string; onStop?: () => void }) => {
+const SubmitButton = ({
+  status,
+  input,
+  isLocked,
+  onStop,
+}: {
+  status: string;
+  input: string;
+  isLocked: boolean;
+  onStop?: () => void;
+}) => {
   const attachments = usePromptInputAttachments();
   const canSend = status === 'ready' && (input.trim().length > 0 || attachments.files.length > 0);
-  const isStreaming = status === 'streaming';
+  const isStoppable = isLocked || status === 'submitted' || status === 'streaming';
 
   return (
     <PromptInputSubmit
-      status={isStreaming ? 'streaming' : 'ready'}
-      disabled={!canSend && !isStreaming}
+      // Use "streaming" icon (stop-square) whenever user can cancel.
+      status={isStoppable ? 'streaming' : 'ready'}
+      disabled={!isStoppable && !canSend}
       onClick={(e) => {
-        if (isStreaming && onStop) {
+        if (isStoppable && onStop) {
           e.preventDefault();
           onStop();
         }
@@ -53,29 +64,20 @@ const ensureConversationCreated = async (
   conversationId: string | null,
   setConversationsList: Dispatch<SetStateAction<any[]>>,
   setConversationId: Dispatch<SetStateAction<string | null>>,
-  setMessages: (messages: any[]) => void,
-  initialText: string
+  signal?: AbortSignal
 ) => {
   if (!authUser || (conversationId && !String(conversationId).startsWith('local-'))) {
     return conversationId;
   }
 
   try {
-    const userMsg = {
-      id: `m-${Date.now()}`,
-      role: 'user',
-      content: initialText,
-      parts: [{ type: 'text', text: initialText }],
-      metadata: {},
-    };
-
     const resp = await fetch('/api/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal,
       body: JSON.stringify({
         userId: authUser.id,
         title: `Conversation ${new Date().toLocaleString()}`,
-        messages: [userMsg],
       }),
     });
 
@@ -86,9 +88,7 @@ const ensureConversationCreated = async (
         return [json.conversation, ...withoutLocal];
       });
       setConversationId(json.conversation.id);
-      setMessages([]);
       localStorage.setItem('activeConversationId', json.conversation.id);
-      await new Promise((resolve) => setTimeout(resolve, 60));
       return json.conversation.id;
     }
   } catch (error) {
@@ -129,6 +129,28 @@ export const PromptInputWrapper = ({
   selectedPromptId,
   documentContent,
 }: PromptInputWrapperProps) => {
+  const submitLockRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const cancelRequestedRef = useRef(false);
+  const preSendAbortRef = useRef<AbortController | null>(null);
+
+  const handleStop = useCallback(() => {
+    cancelRequestedRef.current = true;
+    try {
+      preSendAbortRef.current?.abort();
+    } catch {}
+    preSendAbortRef.current = null;
+
+    // Also attempt to stop any in-flight AI stream.
+    try {
+      stop();
+    } catch {}
+
+    // Release local submit lock immediately so user isn't stuck waiting.
+    submitLockRef.current = false;
+    setIsSubmitting(false);
+  }, [stop]);
+
   const handleSubmit = async (
     message: PromptInputMessage,
     event: FormEvent<HTMLFormElement>
@@ -136,56 +158,57 @@ export const PromptInputWrapper = ({
     event.preventDefault();
 
     if (status !== 'ready') return;
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    cancelRequestedRef.current = false;
 
-    const preparedFiles: FileUIPart[] = [];
-    const extractedHiddenTexts: string[] = [];
-    const trimmedText = (message.text || '').trim();
+    const abort = new AbortController();
+    preSendAbortRef.current = abort;
 
-    if (message.files?.length) {
-      for (const file of message.files as FileUIPart[]) {
-        const mime = file.mediaType;
+    try {
+      const preparedFiles: FileUIPart[] = Array.isArray(message.files)
+        ? (message.files as FileUIPart[])
+        : [];
+      const trimmedText = (message.text || '').trim();
 
-        if (mime && isTextExtractable(mime)) {
-          try {
-            const extracted = await extractTextFromFileUIPart(file);
-            if (extracted.trim().length > 0) {
-              extractedHiddenTexts.push(extracted.trim());
-            }
-          } catch (error) {
-            console.error('Failed extraction:', error);
-          }
+      const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0;
+      if (!hasPayload) return;
+
+      // Avoid blocking UI on client-side extraction; server performs extraction/injection.
+      // Keep isTextExtractable import as a hint for future gating / UI, but don't await extraction here.
+      void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
+
+      const ensuredConversationId = await ensureConversationCreated(
+        authUser,
+        conversationId,
+        setConversationsList,
+        setConversationId,
+        abort.signal
+      );
+
+      if (cancelRequestedRef.current || abort.signal.aborted) return;
+
+      sendMessage(
+        {
+          text: trimmedText,
+          files: preparedFiles,
+        } as any,
+        {
+          body: {
+            selectedPromptId,
+            documentContent: documentContent || undefined,
+            ...(ensuredConversationId ? { conversationId: ensuredConversationId } : {}),
+          },
         }
+      );
 
-        // Always keep the file as an attachment so it is visible in the UI/history
-        preparedFiles.push(file);
-      }
+      setInput('');
+    } finally {
+      preSendAbortRef.current = null;
+      setIsSubmitting(false);
+      submitLockRef.current = false;
     }
-
-    const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0 || extractedHiddenTexts.length > 0;
-    if (!hasPayload) return;
-
-    await ensureConversationCreated(
-      authUser,
-      conversationId,
-      setConversationsList,
-      setConversationId,
-      setMessages,
-      trimmedText
-    );
-
-    sendMessage({
-      text: trimmedText,
-      files: preparedFiles,
-      // pass hidden extracted text for server-side system injection
-      ...(extractedHiddenTexts.length ? { metadata: { hiddenTexts: extractedHiddenTexts } } : {}),
-    } as any, {
-      body: { 
-        selectedPromptId,
-        documentContent: documentContent || undefined 
-      }
-    });
-
-    setInput('');
   };
 
 return (
@@ -217,7 +240,7 @@ return (
             </PromptInputActionMenuContent>
           </PromptInputActionMenu>
 
-          <SubmitButton status={status} input={input} onStop={stop} />
+          <SubmitButton status={status} input={input} isLocked={isSubmitting} onStop={handleStop} />
         </div>
       </div>
 

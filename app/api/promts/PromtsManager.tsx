@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react';
@@ -17,10 +17,12 @@ export function PromptsManager({
   className, 
   onPromptSelect,
   userId,
+  onReady,
 }: { 
   className?: string;
   onPromptSelect?: (content: string, prompt: Prompt) => void | Promise<void>;
   userId?: string | null;
+  onReady?: () => void;
 }) {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -29,6 +31,9 @@ export function PromptsManager({
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const didSignalReadyRef = useRef(false);
+  const requestSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const persistSelection = useCallback(async (id: string) => {
     if (!id) return;
@@ -57,14 +62,25 @@ export function PromptsManager({
   }, [userId]);
 
   const loadPrompts = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsLoading(true);
     try {
       const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
-      const res = await fetch(`/api/promts${query}`);
+      const res = await fetch(`/api/promts${query}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      });
       if (!res.ok) {
         throw new Error('Failed to fetch prompts');
       }
       const data = await res.json();
+
+      // Ignore stale responses (e.g. default-only request finishing after authed request)
+      if (seq !== requestSeqRef.current) return;
 
       const list: Prompt[] = Array.isArray(data)
         ? data
@@ -118,17 +134,35 @@ export function PromptsManager({
         setSelectedId('');
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
+      if (seq !== requestSeqRef.current) return;
       console.error('Failed to load prompts:', error);
-      setPrompts([]);
-      setSelectedId('');
+      // Keep last known prompts on transient failures; don't clobber UI with only default.
     } finally {
-      setIsLoading(false);
+      if (seq === requestSeqRef.current) {
+        setIsLoading(false);
+
+        if (!didSignalReadyRef.current) {
+          didSignalReadyRef.current = true;
+          try {
+            onReady?.();
+          } catch {
+            // ignore
+          }
+        }
+      }
     }
-  }, [userId, onPromptSelect, persistSelection]);
+  }, [userId, onPromptSelect, persistSelection, onReady]);
 
   useEffect(() => {
     loadPrompts();
   }, [loadPrompts]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const handleSelect = useCallback(async (id: string) => {
     setSelectedId(id);

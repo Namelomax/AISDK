@@ -1,8 +1,22 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Check, Copy, Download } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  Download,
+  FileSpreadsheetIcon,
+  FileText,
+  FolderDown,
+  ImageIcon,
+  Paperclip,
+  PencilIcon,
+  PresentationIcon,
+  X,
+} from 'lucide-react';
 import { Response } from '@/components/ai-elements/response';
+import remarkBreaks from 'remark-breaks';
+import { Button } from '@/components/ui/button';
 
 const formatDocumentContent = (raw: string) => {
   if (!raw) return '';
@@ -15,6 +29,14 @@ type DocumentPanelProps = {
   document: DocumentState;
   onCopy?: (payload: { title: string; content: string }) => void;
   onEdit?: (payload: DocumentState) => void;
+  attachments?: Attachment[];
+};
+
+export type Attachment = {
+  id?: string;
+  name?: string;
+  url?: string;
+  mediaType?: string;
 };
 
 export type DocumentState = {
@@ -23,9 +45,48 @@ export type DocumentState = {
   isStreaming: boolean;
 };
 
-export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) => {
+function sanitizeFilename(input: string, fallback: string) {
+  const trimmed = String(input || '').trim();
+  const safe = (trimmed || fallback)
+    .replace(/[<>:"/\\|?*]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 140);
+  return safe || fallback;
+}
+
+function getFileExt(name: string) {
+  const n = String(name || '').trim();
+  const m = n.match(/\.([A-Za-z0-9]+)$/);
+  return (m?.[1] || '').toLowerCase();
+}
+
+function getAttachmentIcon(att: Attachment) {
+  const name = att?.name || '';
+  const ext = getFileExt(name);
+  const mt = String(att?.mediaType || '').toLowerCase();
+
+  const isImage = mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext);
+  if (isImage) return <ImageIcon className="size-4" />;
+
+  const isPresentation =
+    mt.includes('presentation') || mt.includes('powerpoint') || ['ppt', 'pptx'].includes(ext);
+  if (isPresentation) return <PresentationIcon className="size-4" />;
+
+  const isSpreadsheet =
+    mt.includes('spreadsheet') || mt.includes('excel') || ['xls', 'xlsx', 'csv'].includes(ext);
+  if (isSpreadsheet) return <FileSpreadsheetIcon className="size-4" />;
+
+  const isDocLike =
+    mt.includes('pdf') || mt.includes('word') || mt.includes('text') || ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
+  if (isDocLike) return <FileText className="size-4" />;
+
+  return <Paperclip className="size-4" />;
+}
+
+export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [isBundling, setIsBundling] = useState(false);
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
@@ -83,6 +144,98 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadBundle = async () => {
+    if (isBundling) return;
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      // Still allow downloading the document itself.
+      handleDownload();
+      return;
+    }
+
+    setIsBundling(true);
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      const docFilename = sanitizeFilename(displayTitle, 'document') + '.md';
+      const docBody = `# ${displayTitle}\n\n${viewContent}`;
+      zip.file(docFilename, docBody);
+
+      const folder = zip.folder('attachments');
+      const usedNames = new Set<string>();
+
+      for (const att of attachments) {
+        const url = att?.url;
+        if (!url) continue;
+
+        const base = sanitizeFilename(att?.name || '', 'attachment');
+        let candidate = base;
+        let i = 1;
+        while (usedNames.has(candidate)) {
+          candidate = `${base}-${i++}`;
+        }
+        usedNames.add(candidate);
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const buf = await res.arrayBuffer();
+          folder?.file(candidate, buf);
+        } catch {
+          // skip broken attachment
+        }
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const objectUrl = URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = objectUrl;
+      link.download = sanitizeFilename(displayTitle, 'documents') + '_bundle.zip';
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } finally {
+      setIsBundling(false);
+    }
+  };
+
+  const handleDownloadAttachment = async (att: Attachment) => {
+    const url = att?.url;
+    if (!url) return;
+
+    const filename = (att?.name || 'attachment')
+      .replace(/[<>:"/\\|?*]/g, '')
+      .replace(/\s+/g, '_')
+      .slice(0, 140);
+
+    try {
+      if (url.startsWith('data:')) {
+        const link = window.document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        window.document.body.appendChild(link);
+        link.click();
+        window.document.body.removeChild(link);
+        return;
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Failed to fetch attachment');
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      console.warn('Failed to download attachment', e);
+    }
+  };
+
   const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
 
   const displayTitle =
@@ -126,47 +279,72 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
               Генерация...
             </span>
           )}
-          {!editing && (
-            <button
-              onClick={startEdit}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Редактировать
-            </button>
-          )}
-          {editing && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={saveEdit}
-                className="flex items-center gap-1 text-sm text-foreground px-3 py-1 rounded border hover:bg-accent transition-colors"
-              >
-                Сохранить
-              </button>
-              <button
-                onClick={cancelEdit}
-                className="flex items-center gap-1 text-sm text-muted-foreground px-3 py-1 rounded border hover:bg-accent transition-colors"
-              >
-                Отмена
-              </button>
-            </div>
-          )}
-
-          {!editing && (
+          {!editing ? (
             <>
-              <button
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={startEdit}
+                type="button"
+                title="Редактировать"
+                aria-label="Редактировать"
+              >
+                <PencilIcon className="size-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handleDownloadBundle}
+                type="button"
+                title="Скачать папку (ZIP) со всеми файлами"
+                aria-label="Скачать папку (ZIP) со всеми файлами"
+                disabled={isBundling}
+              >
+                <FolderDown className="size-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
                 onClick={handleDownload}
-                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                type="button"
+                title="Скачать документ"
+                aria-label="Скачать документ"
               >
-                <Download size={16} />
-                Скачать
-              </button>
-              <button
+                <Download className="size-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
                 onClick={handleCopy}
-                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                type="button"
+                title={copied ? 'Скопировано' : 'Скопировать'}
+                aria-label={copied ? 'Скопировано' : 'Скопировать'}
               >
-                {copied ? <Check size={16} /> : <Copy size={16} />}
-                {copied ? 'Скопировано!' : 'Скопировать'}
-              </button>
+                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={saveEdit}
+                type="button"
+                title="Сохранить"
+                aria-label="Сохранить"
+              >
+                <Check className="size-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={cancelEdit}
+                type="button"
+                title="Отмена"
+                aria-label="Отмена"
+              >
+                <X className="size-4" />
+              </Button>
             </>
           )}
         </div>
@@ -189,11 +367,46 @@ export const DocumentPanel = ({ document, onCopy, onEdit }: DocumentPanelProps) 
             />
           </div>
         ) : (
-          <Response className="prose prose-sm max-w-none dark:prose-invert">
+          <Response
+            className="prose prose-sm max-w-none dark:prose-invert"
+            remarkPlugins={[remarkBreaks]}
+          >
             {formattedContent}
           </Response>
         )}
       </div>
+
+      {Array.isArray(attachments) && attachments.length > 0 && (
+        <div className="border-t bg-background px-4 py-2">
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            {attachments.map((att, idx) => {
+              const name = att?.name || 'attachment';
+              const canDownload = Boolean(att?.url);
+              return (
+                <div
+                  key={att?.id || `${name}-${idx}`}
+                  className="group relative flex h-10 w-10 items-center justify-center rounded-md border bg-muted/30"
+                  title={name}
+                >
+                  <span className="text-muted-foreground">{getAttachmentIcon(att)}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    disabled={!canDownload}
+                    onClick={() => handleDownloadAttachment(att)}
+                    className="absolute right-0 top-0 h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                    title="Скачать файл"
+                    aria-label="Скачать файл"
+                  >
+                    <Download className="size-4" />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

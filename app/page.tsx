@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { DocumentPanel, DocumentState } from '@/components/document/DocumentPanel';
@@ -9,8 +9,14 @@ import { Header } from '@/components/chat/Header';
 import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
+import { Loader } from '@/components/ai-elements/loader';
 
 export default function ChatPage() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
+  const [promptsLoaded, setPromptsLoaded] = useState(false);
+  const bootCompletedRef = useRef(false);
+
   const [input, setInput] = useState('');
   const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
   const [authUsername, setAuthUsername] = useState('');
@@ -158,6 +164,49 @@ export default function ChatPage() {
       }
     },
   });
+
+  const attachedFiles = useMemo(() => {
+    const collected: Array<{ id?: string; name?: string; url?: string; mediaType?: string }> = [];
+
+    for (const message of messages || []) {
+      if (message?.role !== 'user') continue;
+
+      const metaAtts = Array.isArray((message as any)?.metadata?.attachments)
+        ? ((message as any).metadata.attachments as any[])
+        : [];
+
+      for (const a of metaAtts) {
+        collected.push({
+          id: a?.id,
+          name: a?.name,
+          url: a?.url,
+          mediaType: a?.mediaType,
+        });
+      }
+
+      if (Array.isArray((message as any)?.parts)) {
+        for (const p of (message as any).parts) {
+          if (p?.type !== 'file') continue;
+          collected.push({
+            id: p?.id,
+            name: p?.filename,
+            url: p?.url,
+            mediaType: p?.mediaType,
+          });
+        }
+      }
+    }
+
+    const seen = new Set<string>();
+    const deduped = collected.filter((f) => {
+      const key = `${String(f.url ?? '')}|${String(f.name ?? '')}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return deduped;
+  }, [messages]);
   useEffect(() => {
     if (!conversationId) return;
     setConversationsList((prev) =>
@@ -201,13 +250,21 @@ export default function ChatPage() {
   }, [status, messages, authUser?.id, conversationId, lastSavedAssistantId, document.content]);
 
   useEffect(() => {
+    try {
       const raw = localStorage.getItem('authUser');
       if (raw) setAuthUser(JSON.parse(raw));
+    } finally {
+      setAuthChecked(true);
+    }
   }, []);
 
   // When authUser is present, fetch conversations
   useEffect(() => {
-    if (!authUser?.id) return;
+    if (!authChecked) return;
+    if (!authUser?.id) {
+      setConversationsLoaded(true);
+      return;
+    }
     (async () => {
       try {
         const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(authUser.id)}`);
@@ -262,9 +319,11 @@ export default function ChatPage() {
         }
       } catch (e) {
         console.warn('Failed to fetch conversations on load', e);
+      } finally {
+        setConversationsLoaded(true);
       }
     })();
-  }, [authUser?.id]);
+  }, [authChecked, authUser?.id]);
 
   const handleAuth = async () => {
     if (!authUsername || !authPassword) return;
@@ -279,6 +338,8 @@ export default function ChatPage() {
         setAuthUser(json.user);
         localStorage.setItem('authUser', JSON.stringify(json.user));
         setAuthPassword('');
+        // Don't block the initial loading overlay after explicit auth.
+        setConversationsLoaded(true);
         // Load last conversation
         if (Array.isArray(json.conversations) && json.conversations.length > 0) {
           try {
@@ -341,7 +402,16 @@ export default function ChatPage() {
     setDocument({ title: '', content: '', isStreaming: false });
     setInput('');
     setLastSavedAssistantId(null);
+    // Don't block the initial loading overlay after logout.
+    setConversationsLoaded(true);
   };
+
+  const isBooting = (() => {
+    if (bootCompletedRef.current) return false;
+    const ready = authChecked && promptsLoaded && conversationsLoaded;
+    if (ready) bootCompletedRef.current = true;
+    return !ready;
+  })();
 
   const removeConversationFromState = (convId: string) => {
     setConversationsList((prev) => {
@@ -517,6 +587,15 @@ export default function ChatPage() {
   return (
     <div className="h-screen flex flex-col bg-background">
 
+      {isBooting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Loader size={18} />
+            <span>Загрузка…</span>
+          </div>
+        </div>
+      )}
+
       <Header
         authUser={authUser}
         authUsername={authUsername}
@@ -572,12 +651,13 @@ export default function ChatPage() {
                 className="w-full"
                 onPromptSelect={handlePromptSelect}
                 userId={authUser?.id ?? null}
+                onReady={() => setPromptsLoaded(true)}
               />
             </div>
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={document} onEdit={handleDocumentEdit} />
+        <DocumentPanel document={document} onEdit={handleDocumentEdit} attachments={attachedFiles} />
       </div>
     </div>
   );

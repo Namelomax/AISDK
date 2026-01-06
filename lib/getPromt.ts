@@ -191,6 +191,61 @@ export type Conversation = {
   document_content?: string;
 };
 
+function sanitizeMessagePart(part: any): any {
+  if (!part || typeof part !== 'object') return part;
+  const type = String((part as any).type ?? '');
+
+  if (type === 'text') {
+    return { type: 'text', text: typeof (part as any).text === 'string' ? (part as any).text : '' };
+  }
+
+  if (type === 'file') {
+    // Preserve attachment info so UI can restore filename/type and allow download.
+    return {
+      type: 'file',
+      id: (part as any).id,
+      filename: (part as any).filename,
+      url: (part as any).url,
+      mediaType: (part as any).mediaType,
+    };
+  }
+
+  // Best-effort for other part types: keep type and common fields.
+  const out: any = { type };
+  if (typeof (part as any).text === 'string') out.text = (part as any).text;
+  if ((part as any).metadata && typeof (part as any).metadata === 'object') out.metadata = (part as any).metadata;
+  return out;
+}
+
+function sanitizeMessage(message: any): any {
+  const id =
+    message?.id ||
+    (typeof crypto !== 'undefined' && (crypto as any).randomUUID
+      ? (crypto as any).randomUUID()
+      : String(Date.now()));
+
+  const parts = Array.isArray(message?.parts)
+    ? message.parts.map(sanitizeMessagePart)
+    : [];
+
+  const text =
+    message?.content ||
+    (Array.isArray(message?.parts)
+      ? message.parts.find((p: any) => p?.type === 'text')?.text
+      : '') ||
+    '';
+
+  const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+
+  return {
+    id,
+    role: message?.role || 'user',
+    text,
+    parts,
+    metadata,
+  };
+}
+
 // Create a new user
 export async function createUser(username: string, passwordHash: string): Promise<User> {
   await connectDB();
@@ -254,17 +309,7 @@ export async function saveConversation(userId: string, messages: any, documentCo
   const userRecord = new RecordId('users', userClean);
   // sanitize messages to plain JSON-friendly objects
   console.log('saveConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
-  const sanitized = Array.isArray(messages)
-    ? messages.map((m: any) => ({
-        id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
-        role: m.role || 'user',
-        text: m.content || (m.parts?.find((p: any) => p.type === 'text')?.text) || '',
-        parts: Array.isArray(m.parts)
-          ? m.parts.map((p: any) => (p && typeof p === 'object' ? { type: p.type, text: p.text } : p))
-          : [],
-        metadata: m.metadata || {},
-      }))
-    : [];
+  const sanitized = Array.isArray(messages) ? messages.map(sanitizeMessage) : [];
 
   // Ensure we pass a pure JSON structure (no prototype/functions)
   const sanitizedClean = JSON.parse(JSON.stringify(sanitized));
@@ -420,17 +465,7 @@ export async function updateConversation(conversationId: string, messages: any, 
 
   // Sanitize messages before update
   // console.log('updateConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
-  const sanitized = Array.isArray(messages)
-    ? messages.map((m: any) => ({
-        id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
-        role: m.role || 'user',
-        text: m.content || (m.parts?.find((p: any) => p.type === 'text')?.text) || '',
-        parts: Array.isArray(m.parts)
-          ? m.parts.map((p: any) => (p && typeof p === 'object' ? { type: p.type, text: p.text } : p))
-          : [],
-        metadata: m.metadata || {},
-      }))
-    : [];
+  const sanitized = Array.isArray(messages) ? messages.map(sanitizeMessage) : [];
 
   const sanitizedClean = JSON.parse(JSON.stringify(sanitized));
 

@@ -6,10 +6,13 @@ export type DocumentPatch = {
    * - "replace": replace the section body with `content`
    * - "append": append `content` to the end of the section body
    * - "delete": remove the entire section (heading + body)
+   * - "rename": rename the section heading line (keep the body as-is)
    */
-  mode?: 'replace' | 'append' | 'delete';
+  mode?: 'replace' | 'append' | 'delete' | 'rename';
   /** Content for replace/append (without the heading line) */
   content: string;
+  /** New heading text for rename (can be plain text or a full markdown heading line) */
+  newHeading?: string;
 };
 
 function normalizeNewlines(input: string): string {
@@ -116,12 +119,19 @@ export function applyDocumentPatches(markdown: string, patches: DocumentPatch[])
 
     const range = findSectionRange(updated, heading);
 
-    const mode: 'replace' | 'append' | 'delete' =
-      patch?.mode === 'append' ? 'append' : patch?.mode === 'delete' ? 'delete' : 'replace';
+    const mode: 'replace' | 'append' | 'delete' | 'rename' =
+      patch?.mode === 'append'
+        ? 'append'
+        : patch?.mode === 'delete'
+          ? 'delete'
+          : patch?.mode === 'rename'
+            ? 'rename'
+            : 'replace';
     const body = normalizeNewlines(patch?.content ?? '').trimEnd();
 
     if (!range) {
       if (mode === 'delete') continue;
+      if (mode === 'rename') continue;
       const headingText = stripHeadingSyntax(heading);
       const toAppend = `\n\n## ${headingText}\n${body}\n`;
       updated = (updated.trimEnd() + toAppend).replace(/\n{3,}/g, '\n\n');
@@ -130,6 +140,26 @@ export function applyDocumentPatches(markdown: string, patches: DocumentPatch[])
 
     if (mode === 'delete') {
       updated = (updated.slice(0, range.start) + updated.slice(range.end)).replace(/\n{3,}/g, '\n\n');
+      continue;
+    }
+
+    if (mode === 'rename') {
+      const rawNewHeading = (patch?.newHeading ?? '').trim();
+      const newHeadingText = stripHeadingSyntax(rawNewHeading);
+      if (!newHeadingText) continue;
+
+      const headingLineEnd = (() => {
+        const idx = updated.indexOf('\n', range.start);
+        if (idx === -1 || idx > range.end) return range.end;
+        return idx;
+      })();
+
+      const existingHeadingLine = updated.slice(range.start, headingLineEnd).trimEnd();
+      const m = existingHeadingLine.match(/^(#{1,6})\s+(.+?)\s*$/);
+      const hashes = m?.[1] ?? '#';
+      const newHeadingLine = `${hashes} ${newHeadingText}`;
+
+      updated = (updated.slice(0, range.start) + newHeadingLine + updated.slice(headingLineEnd)).replace(/\n{3,}/g, '\n\n');
       continue;
     }
 

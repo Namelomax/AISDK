@@ -16,10 +16,16 @@ export async function GET(req: Request) {
     const userId = searchParams.get('userId') ?? undefined;
     const prompts = await getAllPrompts(userId ?? undefined);
     const selectedPromptId = userId ? await getUserSelectedPrompt(userId) : null;
-    return NextResponse.json({ prompts, selectedPromptId });
+    return NextResponse.json(
+      { prompts, selectedPromptId },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
   } catch (error) {
     console.error(error);
-    return NextResponse.json({ message: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { message: "Internal Server Error" },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
+    );
   }
 }
 
