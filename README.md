@@ -1,36 +1,82 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AISDK (my-ai-chat)
 
-## Getting Started
+Next.js (App Router) чат-приложение с AI SDK и “правой панелью документа”: генерация/редактирование Markdown-документа потоково, работа с вложениями (PDF/Office/изображения), сохранение диалогов.
 
-First, run the development server:
+## Быстрый старт
+
+1) Установить зависимости:
+
+```bash
+npm install
+```
+
+2) Задать переменные окружения (минимум):
+
+- `OPENROUTER_API_KEY`
+- `SURREALDB`
+
+1) Запуск:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Открыть http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 2026-01-06 — Download update
+- Улучшения скачивания: документ в `.md` и выгрузка всех использованных вложений одним архивом (ZIP).
+- В панели вложений: компактный вид “иконки” + hover действия.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 2026-01-03 — save fix
+- Правки сохранения.
 
-## Learn More
+### 2026-01-02 — Last update / Edit update
+- Улучшения режима редактирования документа.
 
-To learn more about Next.js, take a look at the following resources:
+### 2025-12-30 — Xiomi test (9820105)
+- Эксперименты с моделью.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 2025-12-26 — Classifier fix and edit feature added
+- Починка классификатора маршрутизации.
+- Добавлен функционал редактирования.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 2025-12-23 — Files update / Promt updates
+- Улучшения промптов/шагов промпта.
+- Обновления обработки/отображения файлов.
 
-## Deploy on Vercel
+### 2025-12-19 — behavior fix and doc save
+- Исправления поведения + сохранения документа.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### 2025-12-12 — Files Visual and Pdf support
+- Поддержка PDF и улучшения визуализации файлов.
+- hidden text fix.
+- openrouter added.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 2025-11-29 — Page decomposition / PromptsManager side fix
+- Декомпозиция страницы.
+- Исправления в PromptsManager.
+
+### 2025-11-27 — Sessions added
+- Добавлены сессии/сохранение состояния (по сообщению коммита).
+
+### 2025-11-15 — xls and docs support
+- Поддержка Office-файлов (XLS/DOCS) (по сообщению коммита).
+
+### 2025-11-11 — Attachments Update
+- Обновления логики вложений.
+
+### 2025-10-31 — Gemini Update
+- Обновления интеграции Gemini.
+
+### 2025-10-18 — Streaming / BD Integration
+- Потоковая генерация.
+- Интеграция БД.
+
+### 2025-10-16 — Documents
+- Базовый функционал “документа”.
+
+### 2025-10-04 — Tools / reasoning
+- Поддержка tools и reasoning.
+
+### 2025-09-26 — Initial scaffold
+- Первичная инициализация проекта.

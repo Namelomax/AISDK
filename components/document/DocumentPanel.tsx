@@ -83,6 +83,30 @@ function getAttachmentIcon(att: Attachment) {
   return <Paperclip className="size-4" />;
 }
 
+function isImageAttachment(att: Attachment) {
+  const name = att?.name || '';
+  const ext = getFileExt(name);
+  const mt = String(att?.mediaType || '').toLowerCase();
+  return Boolean(
+    (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) &&
+      att?.url
+  );
+}
+
+function extractTitleFromMarkdown(markdown?: string | null): string | null {
+  const text = String(markdown || '').replace(/\r\n?/g, '\n');
+  if (!text.trim()) return null;
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    const m = t.match(/^#\s+(.+?)\s*$/);
+    if (m?.[1]) return m[1].trim();
+    break;
+  }
+  return null;
+}
+
 export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -161,7 +185,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       const docBody = `# ${displayTitle}\n\n${viewContent}`;
       zip.file(docFilename, docBody);
 
-      const folder = zip.folder('attachments');
+      const folder = zip.folder('Загруженные документы');
       const usedNames = new Set<string>();
 
       for (const att of attachments) {
@@ -190,7 +214,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       const objectUrl = URL.createObjectURL(blob);
       const link = window.document.createElement('a');
       link.href = objectUrl;
-      link.download = sanitizeFilename(displayTitle, 'documents') + '_bundle.zip';
+      link.download = sanitizeFilename(displayTitle, 'documents') + '.zip';
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -238,8 +262,20 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
 
   const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
 
-  const displayTitle =
-    localDoc.title || (localDoc.isStreaming ? 'Генерация документа…' : 'Пример документа');
+  const displayTitle = (() => {
+    const raw = String(localDoc.title || '').trim();
+    if (localDoc.isStreaming) {
+      return raw || 'Генерация документа…';
+    }
+
+    const generic =
+      !raw ||
+      raw.toLowerCase() === 'чат' ||
+      raw.toLowerCase() === 'документ' ||
+      raw.toLowerCase() === 'пример документа';
+    const fromContent = extractTitleFromMarkdown(localDoc.content);
+    return generic && fromContent ? fromContent : (raw || 'Пример документа');
+  })();
 
   const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
 
@@ -298,7 +334,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                 type="button"
                 title="Скачать папку (ZIP) со всеми файлами"
                 aria-label="Скачать папку (ZIP) со всеми файлами"
-                disabled={isBundling}
+                disabled={isBundling || !Array.isArray(attachments) || attachments.length === 0}
               >
                 <FolderDown className="size-4" />
               </Button>
@@ -378,32 +414,62 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
 
       {Array.isArray(attachments) && attachments.length > 0 && (
         <div className="border-t bg-background px-4 py-2">
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>
+          </div>
+          <div className="mt-2 max-h-40 overflow-y-auto no-scrollbar pr-1">
+            <div className="flex flex-wrap gap-2">
             {attachments.map((att, idx) => {
               const name = att?.name || 'attachment';
               const canDownload = Boolean(att?.url);
+              const extension = (att?.name || '').split('.').pop()?.toUpperCase();
+              const showImage = isImageAttachment(att);
+
               return (
                 <div
                   key={att?.id || `${name}-${idx}`}
-                  className="group relative flex h-10 w-10 items-center justify-center rounded-md border bg-muted/30"
+                  className="group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20"
                   title={name}
                 >
-                  <span className="text-muted-foreground">{getAttachmentIcon(att)}</span>
+                  {showImage ? (
+                    <img
+                      alt={name}
+                      className="size-full rounded-md object-cover"
+                      height={56}
+                      src={att?.url}
+                      width={56}
+                    />
+                  ) : (
+                    <div className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
+                      {getAttachmentIcon(att)}
+                      <span className="text-[10px] font-medium uppercase tracking-wide">
+                        {extension || 'FILE'}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                    <span className="truncate" title={name}>
+                      {name}
+                    </span>
+                  </div>
+
                   <Button
-                    variant="ghost"
-                    size="icon"
-                    type="button"
+                    aria-label="Скачать файл"
+                    className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
                     disabled={!canDownload}
                     onClick={() => handleDownloadAttachment(att)}
-                    className="absolute right-0 top-0 h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                    size="icon"
+                    type="button"
+                    variant="outline"
                     title="Скачать файл"
-                    aria-label="Скачать файл"
                   >
-                    <Download className="size-4" />
+                    <Download className="h-3 w-3" />
                   </Button>
                 </div>
               );
             })}
+            </div>
           </div>
         </div>
       )}

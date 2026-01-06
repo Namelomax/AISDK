@@ -102,6 +102,30 @@ export default function ChatPage() {
     return null;
   }
 
+  function extractTitleFromMarkdown(markdown?: string | null): string | null {
+    const text = String(markdown || '').replace(/\r\n?/g, '\n');
+    if (!text.trim()) return null;
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      const m = t.match(/^#\s+(.+?)\s*$/);
+      if (m?.[1]) return m[1].trim();
+      break;
+    }
+    return null;
+  }
+
+  function normalizeConversationTitle(conv: any): any {
+    const existing = String(conv?.title ?? '').trim();
+    const fallback = extractTitleFromMarkdown(conv?.document_content);
+
+    // If title is missing or generic, use the document heading.
+    const isGeneric = !existing || existing.toLowerCase() === 'чат' || existing.toLowerCase() === 'chat';
+    const nextTitle = isGeneric && fallback ? fallback : existing;
+    return { ...conv, title: nextTitle || conv?.title };
+  }
+
   const transport = useMemo(() => {
     const base = '/api/chat';
     const params: string[] = [];
@@ -111,11 +135,100 @@ export default function ChatPage() {
     return new DefaultChatTransport({ api });
   }, [authUser?.id, conversationId]);
 
+  const lastErrorSignatureRef = useRef<string>('');
+
+  function collectErrorText(err: any): string {
+    if (!err) return '';
+    if (typeof err === 'string') return err;
+    const chunks: string[] = [];
+    const push = (v: any) => {
+      const s = typeof v === 'string' ? v : v ? String(v) : '';
+      if (s && !chunks.includes(s)) chunks.push(s);
+    };
+
+    push(err.message);
+    push(err.name);
+    push((err as any).responseBody);
+    push((err as any).statusCode);
+    push((err as any).url);
+    push((err as any).cause?.message);
+    push((err as any).cause?.responseBody);
+    push((err as any).cause?.statusCode);
+
+    try {
+      push(JSON.stringify(err));
+    } catch {}
+    return chunks.join('\n');
+  }
+
+  function isAbortLikeError(err: any): boolean {
+    const text = collectErrorText(err).toLowerCase();
+    const name = String(err?.name || '').toLowerCase();
+    return (
+      name === 'aborterror' ||
+      text.includes('abort') ||
+      text.includes('canceled') ||
+      text.includes('cancelled')
+    );
+  }
+
+  function toUserFriendlyErrorMessage(err: any): string {
+    const raw = collectErrorText(err);
+    const lower = raw.toLowerCase();
+
+    if (
+      lower.includes('maximum context length') ||
+      (lower.includes('context length') && lower.includes('tokens')) ||
+      lower.includes('requested about')
+    ) {
+      return (
+        'Ошибка: слишком большой контекст для модели.\n' +
+        'Попробуйте: удалить часть вложений, укоротить сообщение/документ или разбить задачу на несколько запросов (по частям).'
+      );
+    }
+
+    if (lower.includes('401') || lower.includes('unauthorized') || lower.includes('api key')) {
+      return 'Ошибка авторизации к модели (API key). Проверь `OPENROUTER_API_KEY` и перезапусти сервер.';
+    }
+
+    if (lower.includes('429') || lower.includes('rate limit')) {
+      return 'Слишком много запросов (rate limit). Подожди немного и попробуй снова.';
+    }
+
+    if (lower.includes('timeout') || lower.includes('timed out')) {
+      return 'Истекло время ожидания ответа. Попробуй ещё раз.';
+    }
+
+    return 'Произошла ошибка при обращении к модели. Попробуйте ещё раз или уменьшите объём запроса.';
+  }
+
   const chatKey = `${conversationId ?? 'no'}-${authUser?.id ?? 'anon'}`;
   const { messages, sendMessage, status, regenerate, setMessages, stop } = useChat({
     transport,
     messages: initialMessages,
-    onError: (error) => console.error('Chat error:', error),
+    onError: (error) => {
+      console.error('Chat error:', error);
+      if (isAbortLikeError(error)) return;
+
+      const friendly = toUserFriendlyErrorMessage(error);
+      const signature = friendly.trim();
+      if (signature && lastErrorSignatureRef.current === signature) return;
+      lastErrorSignatureRef.current = signature;
+
+      const errorMessage = {
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        parts: [{ type: 'text', text: friendly }],
+        metadata: { isError: true },
+      };
+
+      try {
+        // useChat setMessages can accept a functional updater; cast to avoid type mismatch.
+        (setMessages as any)((prev: any[]) => [...(Array.isArray(prev) ? prev : []), errorMessage]);
+      } catch {
+        (setMessages as any)([...(Array.isArray(messages) ? messages : []), errorMessage]);
+      }
+    },
     onData: (dataPart) => {
       // console.log('📥 Received data:', dataPart);
       
@@ -276,7 +389,7 @@ export default function ChatPage() {
                   const parsed = JSON.parse(c.messages_raw);
                   if (Array.isArray(parsed)) msgs = parsed;
               }
-              return { ...c, messages: msgs };
+              return normalizeConversationTitle({ ...c, messages: msgs });
             });
             setConversationsList(convs);
             const savedConvId = localStorage.getItem('activeConversationId');
@@ -298,8 +411,11 @@ export default function ChatPage() {
               
               // Restore document content
               if (activeConv.document_content) {
+                const derived = extractTitleFromMarkdown(activeConv.document_content);
                 setDocument({
-                  title: activeConv.title || 'Документ',
+                  title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
+                    ? activeConv.title
+                    : (derived || 'Документ'),
                   content: activeConv.document_content,
                   isStreaming: false,
                 });
@@ -568,8 +684,11 @@ export default function ChatPage() {
     
     // Load document content if available
     if (conversation.document_content) {
+      const derived = extractTitleFromMarkdown(conversation.document_content);
       setDocument({
-        title: conversation.title || 'Документ', // Or extract title from content if needed
+        title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
+          ? conversation.title
+          : (derived || 'Документ'),
         content: conversation.document_content,
         isStreaming: false,
       });
