@@ -32,6 +32,7 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
+  const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
 
   const handlePromptSelect = useCallback((content: string, prompt: any) => {
@@ -736,9 +737,11 @@ export default function ChatPage() {
           onNewLocal={handleNewLocalConversation}
           onRename={handleRenameConversation}
           onDelete={handleDeleteConversation}
+          collapsed={!isChatsPanelVisible}
+          onToggleCollapsed={() => setIsChatsPanelVisible((v) => !v)}
         />
         {/* Центральная часть — чат */}
-        <div className="flex flex-col w-[700px] border-r shrink-0">
+        <div className="flex flex-col w-[600px] border-r shrink-0">
           <ConversationArea
             chatKey={chatKey}
             messages={messages}

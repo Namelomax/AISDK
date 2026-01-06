@@ -7,7 +7,6 @@ import {
   Download,
   FileSpreadsheetIcon,
   FileText,
-  FolderDown,
   ImageIcon,
   Paperclip,
   PencilIcon,
@@ -60,27 +59,51 @@ function getFileExt(name: string) {
   return (m?.[1] || '').toLowerCase();
 }
 
-function getAttachmentIcon(att: Attachment) {
+function getAttachmentAccentClass(att: Attachment) {
+  const name = att?.name || '';
+  const ext = getFileExt(name);
+  const mt = String(att?.mediaType || '').toLowerCase();
+
+  if (mt.includes('pdf') || ext === 'pdf') return 'text-destructive';
+
+  const isDocLike =
+    mt.includes('word') || mt.includes('text') || ['doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
+  // DOC/DOCX should be blue.
+  if (isDocLike) return 'text-[color:var(--chart-1)]';
+
+  const isPresentation =
+    mt.includes('presentation') || mt.includes('powerpoint') || ['ppt', 'pptx'].includes(ext);
+  // PPT/PPTX should be orange.
+  if (isPresentation) return 'text-[color:var(--chart-3)]';
+
+  const isSpreadsheet =
+    mt.includes('spreadsheet') || mt.includes('excel') || ['xls', 'xlsx', 'csv'].includes(ext);
+  if (isSpreadsheet) return 'text-[color:var(--chart-2)]';
+
+  return 'text-muted-foreground';
+}
+
+function getAttachmentIcon(att: Attachment, className?: string) {
   const name = att?.name || '';
   const ext = getFileExt(name);
   const mt = String(att?.mediaType || '').toLowerCase();
 
   const isImage = mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext);
-  if (isImage) return <ImageIcon className="size-4" />;
+  if (isImage) return <ImageIcon className={className ? `size-4 ${className}` : 'size-4'} />;
 
   const isPresentation =
     mt.includes('presentation') || mt.includes('powerpoint') || ['ppt', 'pptx'].includes(ext);
-  if (isPresentation) return <PresentationIcon className="size-4" />;
+  if (isPresentation) return <PresentationIcon className={className ? `size-4 ${className}` : 'size-4'} />;
 
   const isSpreadsheet =
     mt.includes('spreadsheet') || mt.includes('excel') || ['xls', 'xlsx', 'csv'].includes(ext);
-  if (isSpreadsheet) return <FileSpreadsheetIcon className="size-4" />;
+  if (isSpreadsheet) return <FileSpreadsheetIcon className={className ? `size-4 ${className}` : 'size-4'} />;
 
   const isDocLike =
     mt.includes('pdf') || mt.includes('word') || mt.includes('text') || ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
-  if (isDocLike) return <FileText className="size-4" />;
+  if (isDocLike) return <FileText className={className ? `size-4 ${className}` : 'size-4'} />;
 
-  return <Paperclip className="size-4" />;
+  return <Paperclip className={className ? `size-4 ${className}` : 'size-4'} />;
 }
 
 function isImageAttachment(att: Attachment) {
@@ -145,36 +168,8 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     }
   };
 
-  const handleDownload = () => {
-    const formatted = `# ${displayTitle}\n\n${viewContent}`;
-    
-    // Create blob and download
-    const blob = new Blob([formatted], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = window.document.createElement('a');
-    
-    // Sanitize filename
-    const filename = displayTitle
-      .replace(/[<>:"/\\|?*]/g, '') // Remove invalid characters
-      .replace(/\s+/g, '_') // Replace spaces with underscores
-      .slice(0, 100) // Limit length
-      + '.md';
-    
-    link.href = url;
-    link.download = filename;
-    window.document.body.appendChild(link);
-    link.click();
-    window.document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
   const handleDownloadBundle = async () => {
     if (isBundling) return;
-    if (!Array.isArray(attachments) || attachments.length === 0) {
-      // Still allow downloading the document itself.
-      handleDownload();
-      return;
-    }
 
     setIsBundling(true);
     try {
@@ -185,28 +180,31 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       const docBody = `# ${displayTitle}\n\n${viewContent}`;
       zip.file(docFilename, docBody);
 
-      const folder = zip.folder('Загруженные документы');
-      const usedNames = new Set<string>();
+      const list = Array.isArray(attachments) ? attachments : [];
+      if (list.length > 0) {
+        const folder = zip.folder('Загруженные документы');
+        const usedNames = new Set<string>();
 
-      for (const att of attachments) {
-        const url = att?.url;
-        if (!url) continue;
+        for (const att of list) {
+          const url = att?.url;
+          if (!url) continue;
 
-        const base = sanitizeFilename(att?.name || '', 'attachment');
-        let candidate = base;
-        let i = 1;
-        while (usedNames.has(candidate)) {
-          candidate = `${base}-${i++}`;
-        }
-        usedNames.add(candidate);
+          const base = sanitizeFilename(att?.name || '', 'attachment');
+          let candidate = base;
+          let i = 1;
+          while (usedNames.has(candidate)) {
+            candidate = `${base}-${i++}`;
+          }
+          usedNames.add(candidate);
 
-        try {
-          const res = await fetch(url);
-          if (!res.ok) continue;
-          const buf = await res.arrayBuffer();
-          folder?.file(candidate, buf);
-        } catch {
-          // skip broken attachment
+          try {
+            const res = await fetch(url);
+            if (!res.ok) continue;
+            const buf = await res.arrayBuffer();
+            folder?.file(candidate, buf);
+          } catch {
+            // skip broken attachment
+          }
         }
       }
 
@@ -332,19 +330,9 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                 size="icon"
                 onClick={handleDownloadBundle}
                 type="button"
-                title="Скачать папку (ZIP) со всеми файлами"
-                aria-label="Скачать папку (ZIP) со всеми файлами"
-                disabled={isBundling || !Array.isArray(attachments) || attachments.length === 0}
-              >
-                <FolderDown className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={handleDownload}
-                type="button"
-                title="Скачать документ"
-                aria-label="Скачать документ"
+                title="Скачать ZIP (документ + вложения)"
+                aria-label="Скачать ZIP (документ + вложения)"
+                disabled={isBundling}
               >
                 <Download className="size-4" />
               </Button>
@@ -424,12 +412,26 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
               const canDownload = Boolean(att?.url);
               const extension = (att?.name || '').split('.').pop()?.toUpperCase();
               const showImage = isImageAttachment(att);
+              const accent = getAttachmentAccentClass(att);
 
               return (
                 <div
                   key={att?.id || `${name}-${idx}`}
-                  className="group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20"
+                  className={`group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20 transition-colors ${canDownload ? 'cursor-pointer hover:bg-muted/30' : ''}`}
                   title={name}
+                  role={canDownload ? 'button' : undefined}
+                  tabIndex={canDownload ? 0 : -1}
+                  onClick={() => {
+                    if (!canDownload) return;
+                    handleDownloadAttachment(att);
+                  }}
+                  onKeyDown={(e) => {
+                    if (!canDownload) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleDownloadAttachment(att);
+                    }
+                  }}
                 >
                   {showImage ? (
                     <img
@@ -440,8 +442,8 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                       width={56}
                     />
                   ) : (
-                    <div className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
-                      {getAttachmentIcon(att)}
+                    <div className="flex size-full flex-col items-center justify-center gap-1">
+                      <span className={accent}>{getAttachmentIcon(att, accent)}</span>
                       <span className="text-[10px] font-medium uppercase tracking-wide">
                         {extension || 'FILE'}
                       </span>
@@ -458,7 +460,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                     aria-label="Скачать файл"
                     className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
                     disabled={!canDownload}
-                    onClick={() => handleDownloadAttachment(att)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDownloadAttachment(att);
+                    }}
                     size="icon"
                     type="button"
                     variant="outline"
