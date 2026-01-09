@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import {
   Check,
   Copy,
@@ -16,6 +16,7 @@ import {
 import { Response } from '@/components/ai-elements/response';
 import remarkBreaks from 'remark-breaks';
 import { Button } from '@/components/ui/button';
+import { MermaidDiagram } from '@/components/document/MermaidDiagram';
 
 const formatDocumentContent = (raw: string) => {
   if (!raw) return '';
@@ -43,6 +44,143 @@ export type DocumentState = {
   content: string;
   isStreaming: boolean;
 };
+
+type DocumentViewMode = 'document' | 'diagram';
+
+type OutlineNode = {
+  text: string;
+  level: number;
+  children: OutlineNode[];
+};
+
+function escapeHtml(input: string) {
+  return String(input || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeMermaidString(input: string) {
+  // Escapes for Mermaid quoted strings: ["..."]
+  return String(input || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, ' ');
+}
+
+function wrapWords(input: string, maxCharsPerLine: number) {
+  const text = String(input || '').trim().replace(/\s+/g, ' ');
+  if (!text) return [] as string[];
+
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let current = '';
+
+  for (const w of words) {
+    if (!current) {
+      current = w;
+      continue;
+    }
+    if ((current + ' ' + w).length <= maxCharsPerLine) {
+      current = current + ' ' + w;
+    } else {
+      lines.push(current);
+      current = w;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function buildMermaidLabel(input: string, maxCharsPerLine: number) {
+  const lines = wrapWords(input, maxCharsPerLine);
+  const html = lines.map((l) => escapeHtml(l)).join('<br/>');
+  return escapeMermaidString(html);
+}
+
+function parseMarkdownToOutline(markdown: string): OutlineNode[] {
+  const text = String(markdown || '').replace(/\r\n?/g, '\n');
+  const lines = text.split('\n');
+
+  const root: OutlineNode = { text: '__root__', level: 0, children: [] };
+  const stack: OutlineNode[] = [root];
+  let inCodeFence = false;
+  let lastHeadingLevel = 1;
+
+  for (const rawLine of lines) {
+    const line = rawLine ?? '';
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith('```')) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence) continue;
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const text = headingMatch[2].trim();
+      if (!text) continue;
+      lastHeadingLevel = level;
+
+      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+        stack.pop();
+      }
+      const parent = stack[stack.length - 1] || root;
+      const node: OutlineNode = { text, level, children: [] };
+      parent.children.push(node);
+      stack.push(node);
+      continue;
+    }
+
+    const listMatch = line.match(/^(\s*)(?:[-*+]|\d+\.)\s+(.+?)\s*$/);
+    if (listMatch) {
+      const indent = (listMatch[1] || '').replace(/\t/g, '    ').length;
+      const depth = Math.floor(indent / 2);
+      const level = Math.min(20, lastHeadingLevel + 1 + depth);
+      const text = listMatch[2].trim();
+      if (!text) continue;
+
+      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+        stack.pop();
+      }
+      const parent = stack[stack.length - 1] || root;
+      const node: OutlineNode = { text, level, children: [] };
+      parent.children.push(node);
+      stack.push(node);
+      continue;
+    }
+  }
+
+  return root.children;
+}
+
+function outlineToMermaidFlowchart(title: string, outline: OutlineNode[]): string {
+  const safeTitle = title || 'Документ';
+  const lines: string[] = ['flowchart TD'];
+  const makeId = (() => {
+    let i = 0;
+    return () => `n${i++}`;
+  })();
+
+  const rootId = makeId();
+  lines.push(`  ${rootId}[\"${buildMermaidLabel(safeTitle, 34)}\"]`);
+
+  const emit = (parentId: string, nodes: OutlineNode[]) => {
+    for (const node of nodes) {
+      const id = makeId();
+      const label = buildMermaidLabel(node.text, 34);
+      lines.push(`  ${id}["${label}"]`);
+      lines.push(`  ${parentId} --> ${id}`);
+      if (node.children?.length) emit(id, node.children);
+    }
+  };
+
+  emit(rootId, outline);
+  return lines.join('\n');
+}
 
 function sanitizeFilename(input: string, fallback: string) {
   const trimmed = String(input || '').trim();
@@ -134,6 +272,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
+  const [viewMode, setViewMode] = useState<DocumentViewMode>('document');
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
@@ -277,6 +416,13 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
 
   const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
 
+  const diagramSource = editing ? draftContent : viewContent;
+  const mermaidCode = useMemo(() => {
+    const outline = parseMarkdownToOutline(diagramSource);
+    if (!outline.length) return '';
+    return outlineToMermaidFlowchart(displayTitle, outline);
+  }, [diagramSource, displayTitle]);
+
   const formattedContent = formatDocumentContent(viewContent);
 
   const startEdit = () => {
@@ -313,6 +459,32 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
               Генерация...
             </span>
           )}
+
+          {!editing && (
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant={viewMode === 'document' ? 'secondary' : 'outline'}
+                onClick={() => setViewMode('document')}
+                aria-label="Показать документ"
+                title="Документ"
+              >
+                Документ
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={viewMode === 'diagram' ? 'secondary' : 'outline'}
+                onClick={() => setViewMode('diagram')}
+                aria-label="Показать схему"
+                title="Схема"
+              >
+                Схема
+              </Button>
+            </div>
+          )}
+
           {!editing ? (
             <>
               <Button
@@ -391,12 +563,23 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
             />
           </div>
         ) : (
-          <Response
-            className="prose prose-sm max-w-none dark:prose-invert"
-            remarkPlugins={[remarkBreaks]}
-          >
-            {formattedContent}
-          </Response>
+          <>
+            <div className={viewMode === 'diagram' ? '' : 'hidden'}>
+              <MermaidDiagram
+                className="w-full h-[60vh]"
+                code={mermaidCode}
+                ariaLabel="Схема документа"
+              />
+            </div>
+            <div className={viewMode === 'document' ? '' : 'hidden'}>
+              <Response
+                className="prose prose-sm max-w-none dark:prose-invert"
+                remarkPlugins={[remarkBreaks]}
+              >
+                {formattedContent}
+              </Response>
+            </div>
+          </>
         )}
       </div>
 
