@@ -1,8 +1,62 @@
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import { AgentContext } from './types';
+import type { AgentContext } from './types';
 
 export type IntentType = 'chat' | 'document';
+
+function looksLikeExplicitDocumentCommand(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  if (!t) return false;
+
+  const editVerb =
+    t.includes('измени') ||
+    t.includes('передел') ||
+    t.includes('отредакт') ||
+    t.includes('поправ') ||
+    t.includes('замени') ||
+    t.includes('добав') ||
+    t.includes('убер') ||
+    t.includes('удали') ||
+    t.includes('исключ') ||
+    t.includes('внеси') ||
+    t.includes('дополни');
+
+  const docTargetHint =
+    t.includes('в документ') ||
+    t.includes('в регламент') ||
+    t.includes('пункт') ||
+    t.includes('раздел') ||
+    t.includes('регламент') ||
+    t.includes('документ');
+
+  const genVerb =
+    t.includes('сформируй') ||
+    t.includes('сформировать') ||
+    t.includes('составь') ||
+    t.includes('составить') ||
+    t.includes('сгенерируй') ||
+    t.includes('сгенерировать') ||
+    t.includes('подготовь') ||
+    t.includes('подготовить') ||
+    t.includes('оформи') ||
+    t.includes('оформить') ||
+    t.includes('сделай') ||
+    t.includes('сделать') ||
+    t.includes('выведи') ||
+    t.includes('покажи') ||
+    t.includes('дай');
+
+  const docNoun =
+    t.includes('регламент') ||
+    t.includes('документ') ||
+    t.includes('инструкц') ||
+    t.includes('положение') ||
+    t.includes('политик') ||
+    t.includes('итогов') ||
+    t.includes('финальн');
+
+  return (editVerb && docTargetHint) || (genVerb && docNoun);
+}
 
 export async function classifyIntent(context: AgentContext): Promise<IntentType> {
   const { messages, userPrompt, model } = context;
@@ -10,6 +64,13 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
   // Берем достаточно контекста для понимания стадии диалога
   const conversationContext = messages.slice(-12);
   const lastUserMessage = messages[messages.length - 1]?.content ?? '';
+  const lastUserText = typeof lastUserMessage === 'string' ? lastUserMessage : JSON.stringify(lastUserMessage);
+
+  // Deterministic fast-path for explicit document commands.
+  if (looksLikeExplicitDocumentCommand(lastUserText)) {
+    console.log('🤖 Intent classification: heuristic override -> document');
+    return 'document';
+  }
 
   try {
     const { object: intentObj } = await generateObject({
@@ -44,7 +105,7 @@ ${conversationContext.map((msg, i) => {
 }).join('\n\n')}
 
 ПОСЛЕДНЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
-"${typeof lastUserMessage === 'string' ? lastUserMessage : JSON.stringify(lastUserMessage)}"
+"${lastUserText}"
 
 КРИТЕРИИ АНАЛИЗА:
 
@@ -87,11 +148,16 @@ ${conversationContext.map((msg, i) => {
     
     if (intentObj.confidence < 0.6) {
       console.warn('⚠️ Low confidence classification:', intentObj);
+      if (looksLikeExplicitDocumentCommand(lastUserText)) {
+        console.warn('⚠️ Low confidence + heuristic document command -> overriding to document');
+        return 'document';
+      }
     }
     
     return intentObj.type;
   } catch (err) {
     console.error('Intent classification failed:', err);
+    if (looksLikeExplicitDocumentCommand(lastUserText)) return 'document';
     return 'chat';
   }
 }

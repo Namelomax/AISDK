@@ -92,8 +92,38 @@ function wrapWords(input: string, maxCharsPerLine: number) {
   return lines;
 }
 
+function stripBasicMarkdown(input: string) {
+  return String(input || '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/^\s*[-*+]\s+/, '')
+    .trim();
+}
+
+function pickEmojiForLabel(input: string) {
+  const t = stripBasicMarkdown(input).toLowerCase();
+  if (!t) return '';
+
+  // Roles / people
+  if (t.includes('актор') || t.includes('директор') || t.includes('ответствен')) return '👤';
+  if (t.includes('смежник') || t.includes('участник') || t.includes('жюри') || t.includes('команда')) return '👥';
+
+  // Artifacts / tools
+  if (t.includes('регламент') || t.includes('документ') || t.includes('положение')) return '📄';
+  if (t.includes('платформ') || t.includes('it') || t.includes('контест') || t.includes('yandex') || t.includes('codeforces')) return '💻';
+  if (t.includes('задач') || t.includes('тест')) return '🧩';
+  if (t.includes('продвиж') || t.includes('публикац') || t.includes('постер') || t.includes('приглаш')) return '📣';
+  if (t.includes('срок') || t.includes('дата') || t.includes('время')) return '🗓️';
+
+  return '';
+}
+
 function buildMermaidLabel(input: string, maxCharsPerLine: number) {
-  const lines = wrapWords(input, maxCharsPerLine);
+  const emoji = pickEmojiForLabel(input);
+  const plain = stripBasicMarkdown(input);
+  const withEmoji = emoji ? `${emoji} ${plain}` : plain;
+  const lines = wrapWords(withEmoji, maxCharsPerLine);
   const html = lines.map((l) => escapeHtml(l)).join('<br/>');
   return escapeMermaidString(html);
 }

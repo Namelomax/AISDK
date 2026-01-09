@@ -1,6 +1,6 @@
 'use client';
 
-import { Minus, Plus, RefreshCcw } from 'lucide-react';
+import { Check, Copy, Download, Minus, Plus, RefreshCcw } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -50,6 +50,7 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
   const renderId = useMemo(() => `mermaid-${unique.replace(/[:]/g, '')}`, [unique]);
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [copied, setCopied] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -219,6 +220,49 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
     resetViewToFirstNode();
   };
 
+  const buildMermaidMarkdown = () => {
+    const trimmed = String(code || '').trim();
+    if (!trimmed) return '';
+
+    // Keep formatting consistent across renderers (e.g., Obsidian).
+    // Mermaid supports init directives inside code blocks.
+    const init = "%%{init: {'flowchart': {'htmlLabels': true}} }%%";
+    return ['```mermaid', init, trimmed, '```', ''].join('\n');
+  };
+
+  const handleCopyMarkdown = async () => {
+    const md = buildMermaidMarkdown();
+    if (!md) return;
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.warn('Failed to copy mermaid markdown', e);
+    }
+  };
+
+  const downloadSvg = () => {
+    const svgString = String(svg || '').trim();
+    if (!svgString) return;
+
+    const withXml = svgString.startsWith('<?xml')
+      ? svgString
+      : `<?xml version="1.0" encoding="UTF-8"?>\n${svgString}`;
+
+    const blob = new Blob([withXml], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const a = window.document.createElement('a');
+    a.href = url;
+    a.download = 'diagram.svg';
+    window.document.body.appendChild(a);
+    a.click();
+    window.document.body.removeChild(a);
+
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -290,7 +334,36 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
 
   return (
     <div className={className} aria-label={ariaLabel || 'Diagram'}>
-      <div className="mb-3 flex items-center justify-end gap-2">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            title={copied ? 'Скопировано' : 'Скопировать в Markdown (Mermaid)'}
+            aria-label={copied ? 'Скопировано' : 'Скопировать в Markdown (Mermaid)'}
+            onClick={handleCopyMarkdown}
+            disabled={!code?.trim()}
+          >
+            {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+            {copied ? 'Скопировано' : 'Копировать' }
+          </Button>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            title="Скачать SVG (качество без потерь)"
+            aria-label="Скачать SVG (качество без потерь)"
+            onClick={downloadSvg}
+            disabled={!svg?.trim()}
+          >
+            <Download className="size-4" />
+            Скачать SVG
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-2">
         <Button
           type="button"
           size="icon"
@@ -327,6 +400,7 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
         >
           <RefreshCcw className="size-4" />
         </Button>
+        </div>
       </div>
 
       <div

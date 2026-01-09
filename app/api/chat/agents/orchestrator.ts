@@ -1,4 +1,4 @@
-import { AgentContext } from './types';
+import type { AgentContext } from './types';
 import { IntentType } from './classifier';
 
 export interface OrchestratorDecision {
@@ -77,6 +77,40 @@ function looksLikeAttachmentReadRequest(text: string): boolean {
   return hasReadVerb && mentionsFile && !explicitlyDocumentEdit;
 }
 
+function looksLikeDocumentGenerationRequest(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  if (!t) return false;
+
+  const genVerb =
+    t.includes('сформируй') ||
+    t.includes('сформировать') ||
+    t.includes('составь') ||
+    t.includes('составить') ||
+    t.includes('сгенерируй') ||
+    t.includes('сгенерировать') ||
+    t.includes('подготовь') ||
+    t.includes('подготовить') ||
+    t.includes('оформи') ||
+    t.includes('оформить') ||
+    t.includes('сделай') ||
+    t.includes('сделать') ||
+    t.includes('выведи') ||
+    t.includes('покажи') ||
+    t.includes('дай');
+
+  const docNoun =
+    t.includes('регламент') ||
+    t.includes('документ') ||
+    t.includes('инструкц') ||
+    t.includes('положение') ||
+    t.includes('политик') ||
+    t.includes('итогов') ||
+    t.includes('финальн');
+
+  // Require both a strong action and a document artifact reference.
+  return genVerb && docNoun;
+}
+
 function isConfirmation(text: string): boolean {
   const t = (text || '').trim().toLowerCase();
   if (!t) return false;
@@ -137,38 +171,48 @@ function looksLikeDocumentEdit(lastUserText: string, previousAssistantText: stri
 
 // Orchestrator: classifier-first, but with deterministic override for edits when a document already exists.
 export function decideNextAction(context: AgentContext, intent: IntentType): OrchestratorDecision {
-  const hasExisting = Boolean(context?.documentContent && context.documentContent.trim().length > 20);
+  const hasExisting = Boolean(context?.documentContent && context.documentContent.trim().length > 0);
 
-  if (hasExisting) {
-    const msgs = context?.messages || [];
-    const lastUser = [...msgs].reverse().find((m: any) => m?.role === 'user');
-    const lastUserText = stripEmbeddedAttachments(extractMessageText(lastUser));
-    const lastAssistant = (() => {
-      const idx = msgs.length - 1;
-      // Find the most recent assistant message before the last user message.
-      let seenUser = false;
-      for (let i = idx; i >= 0; i--) {
-        if (msgs[i]?.role === 'user') {
-          if (!seenUser) {
-            seenUser = true;
-            continue;
-          }
+  const msgs = context?.messages || [];
+  const lastUser = [...msgs].reverse().find((m: any) => m?.role === 'user');
+  const lastUserText = stripEmbeddedAttachments(extractMessageText(lastUser));
+  const lastAssistant = (() => {
+    const idx = msgs.length - 1;
+    // Find the most recent assistant message before the last user message.
+    let seenUser = false;
+    for (let i = idx; i >= 0; i--) {
+      if (msgs[i]?.role === 'user') {
+        if (!seenUser) {
+          seenUser = true;
+          continue;
         }
-        if (seenUser && msgs[i]?.role === 'assistant') return msgs[i];
       }
-      return null;
-    })();
-    const lastAssistantText = stripEmbeddedAttachments(extractMessageText(lastAssistant));
-
-    // If the user is asking to read/summarize an attached file, treat it as chat.
-    // The attachment's extracted text is already injected into context for the chat agent.
-    if (looksLikeAttachmentReadRequest(lastUserText)) {
-      return { route: 'chat', reason: 'Heuristic: user asks to read/summarize attachment (not a document edit).' };
+      if (seenUser && msgs[i]?.role === 'assistant') return msgs[i];
     }
+    return null;
+  })();
+  const lastAssistantText = stripEmbeddedAttachments(extractMessageText(lastAssistant));
 
-    if (looksLikeDocumentEdit(lastUserText, lastAssistantText)) {
-      return { route: 'document', reason: 'Heuristic: existing document + edit/confirm request.' };
-    }
+  const explicitEdit = looksLikeDocumentEdit(lastUserText, lastAssistantText);
+  const explicitGeneration = looksLikeDocumentGenerationRequest(lastUserText);
+
+  // If the user is asking to read/summarize an attached file, treat it as chat
+  // UNLESS they are explicitly requesting edits/generation of the process document.
+  if (looksLikeAttachmentReadRequest(lastUserText) && !explicitEdit && !explicitGeneration) {
+    return { route: 'chat', reason: 'Heuristic: user asks to read/summarize attachment (not a document edit).' };
+  }
+
+  if (explicitEdit) {
+    return {
+      route: 'document',
+      reason: hasExisting
+        ? 'Heuristic: existing document + edit/confirm request.'
+        : 'Heuristic: edit/confirm request (treat as document even without existing content).',
+    };
+  }
+
+  if (explicitGeneration) {
+    return { route: 'document', reason: 'Heuristic: explicit request to generate/output the document.' };
   }
 
   if (intent === 'document') {
