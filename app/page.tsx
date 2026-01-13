@@ -2,7 +2,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { DocumentPanel, DocumentState, type ProcessDiagramState } from '@/components/document/DocumentPanel';
+import { DocumentPanel, type DocumentState, type ProcessDiagramState } from '@/components/document/DocumentPanel';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
 import { PromptsManager } from './api/promts/PromtsManager';
 import { Header } from '@/components/chat/Header';
@@ -28,6 +28,12 @@ export default function ChatPage() {
   const [initialMessages] = useState<any[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [document, setDocument] = useState<DocumentState>({
+    title: '',
+    content: '',
+    isStreaming: false,
+  });
+  // Document shown in the right panel can differ from the conversation that is currently streaming.
+  const [viewDocument, setViewDocument] = useState<DocumentState>({
     title: '',
     content: '',
     isStreaming: false,
@@ -82,6 +88,37 @@ export default function ChatPage() {
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // Chat that user is currently viewing in the UI.
+  const [viewConversationId, setViewConversationId] = useState<string | null>(null);
+
+  // Ensure that when PromptInputWrapper creates a real conversation from a local-* id,
+  // both engine + view ids stay in sync.
+  const setConversationIdAndView = useCallback<React.Dispatch<React.SetStateAction<string | null>>>(
+    (next) => {
+      setConversationId((prev) => {
+        const resolved = typeof next === 'function' ? (next as any)(prev) : next;
+        setViewConversationId(resolved);
+        return resolved;
+      });
+    },
+    []
+  );
+
+  const viewedConversation = useMemo(() => {
+    if (!viewConversationId) return null;
+    return (conversationsList || []).find((c: any) => c?.id === viewConversationId) || null;
+  }, [conversationsList, viewConversationId]);
+
+  const updateEngineDocument = useCallback(
+    (updater: (prev: DocumentState) => DocumentState) => {
+      setDocument(updater);
+      // Keep the visible right-panel document in sync only when user is viewing the engine conversation.
+      if (viewConversationId === conversationId) {
+        setViewDocument(updater);
+      }
+    },
+    [conversationId, viewConversationId]
+  );
 
   // Нормализация сообщений из БД в формат UIMessage
   function toUIMessages(raw: any[]): any[] {
@@ -205,7 +242,7 @@ export default function ChatPage() {
     return 'Произошла ошибка при обращении к модели. Попробуйте ещё раз или уменьшите объём запроса.';
   }
 
-  const chatKey = `${conversationId ?? 'no'}-${authUser?.id ?? 'anon'}`;
+  const chatKey = `${viewConversationId ?? conversationId ?? 'no'}-${authUser?.id ?? 'anon'}`;
   const { messages, sendMessage, status, regenerate, setMessages, stop } = useChat({
     transport,
     messages: initialMessages,
@@ -243,7 +280,7 @@ export default function ChatPage() {
       // Обработка событий документа
       if (normalized.type === 'data-title') {
         console.log('📄 Document title:', normalized.data);
-        setDocument((prev) => ({
+        updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           title: String(normalized.data),
           isStreaming: true,
@@ -252,7 +289,7 @@ export default function ChatPage() {
 
       if (normalized.type === 'data-clear') {
         console.log('🧹 Clearing document');
-        setDocument((prev) => ({
+        updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           content: '',
           isStreaming: true,
@@ -260,7 +297,7 @@ export default function ChatPage() {
       }
 
       if (normalized.type === 'data-documentDelta') {
-        setDocument((prev) => ({
+        updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           content: prev.content + normalized.data,
         }));
@@ -268,7 +305,7 @@ export default function ChatPage() {
 
       if (normalized.type === 'data-documentPatch') {
         const patch = normalized.data as DocumentPatch;
-        setDocument((prev) => ({
+        updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           // Apply patch without clearing the document
           content: applyDocumentPatches(prev.content || '', [patch]),
@@ -278,13 +315,20 @@ export default function ChatPage() {
 
       if (normalized.type === 'data-finish') {
         console.log('✅ Document finished');
-        setDocument((prev) => ({
+        updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           isStreaming: false,
         }));
       }
     },
   });
+
+  const displayMessages = useMemo(() => {
+    if (!viewConversationId || viewConversationId === conversationId) return messages;
+    return toUIMessages(viewedConversation?.messages || []);
+  }, [messages, viewConversationId, conversationId, viewedConversation]);
+
+  const displayStatus = viewConversationId === conversationId ? status : 'ready';
 
   // Load diagram state per conversation.
   useEffect(() => {
@@ -488,6 +532,7 @@ export default function ChatPage() {
             
             if (activeConv) {
               setConversationId(activeConv.id);
+              setViewConversationId(activeConv.id);
               const hydrated = toUIMessages(activeConv.messages);
               setLastSavedAssistantId(getLastAssistantId(hydrated));
               setMessages(hydrated);
@@ -495,25 +540,26 @@ export default function ChatPage() {
               // Restore document content
               if (activeConv.document_content) {
                 const derived = extractTitleFromMarkdown(activeConv.document_content);
-                setDocument({
+                const nextDoc = {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
                     : (derived || 'Документ'),
                   content: activeConv.document_content,
                   isStreaming: false,
-                });
+                } as DocumentState;
+                setDocument(nextDoc);
+                setViewDocument(nextDoc);
               } else {
-                setDocument({
-                  title: '',
-                  content: '',
-                  isStreaming: false,
-                });
+                const emptyDoc = { title: '', content: '', isStreaming: false } as DocumentState;
+                setDocument(emptyDoc);
+                setViewDocument(emptyDoc);
               }
 
               localStorage.setItem('activeConversationId', activeConv.id);
             } else {
                       setConversationsList([]);
                       setConversationId(null);
+                      setViewConversationId(null);
             }
         }
       } catch (e) {
@@ -554,23 +600,24 @@ export default function ChatPage() {
             const first = convs[0];
             if (first) {
               setConversationId(first.id ?? null);
+              setViewConversationId(first.id ?? null);
               const hydrated = toUIMessages(first.messages);
               setLastSavedAssistantId(getLastAssistantId(hydrated));
               setMessages(hydrated);
               
               // Restore document content on login
               if (first.document_content) {
-                setDocument({
+                const nextDoc = {
                   title: first.title || 'Документ',
                   content: first.document_content,
                   isStreaming: false,
-                });
+                } as DocumentState;
+                setDocument(nextDoc);
+                setViewDocument(nextDoc);
               } else {
-                setDocument({
-                  title: '',
-                  content: '',
-                  isStreaming: false,
-                });
+                const emptyDoc = { title: '', content: '', isStreaming: false } as DocumentState;
+                setDocument(emptyDoc);
+                setViewDocument(emptyDoc);
               }
             }
           } catch (e) {
@@ -597,8 +644,10 @@ export default function ChatPage() {
     localStorage.removeItem('activeConversationId');
     setConversationsList([]);
     setConversationId(null);
+    setViewConversationId(null);
     setMessages([]);
     setDocument({ title: '', content: '', isStreaming: false });
+    setViewDocument({ title: '', content: '', isStreaming: false });
     setInput('');
     setLastSavedAssistantId(null);
     // Don't block the initial loading overlay after logout.
@@ -615,6 +664,18 @@ export default function ChatPage() {
   const removeConversationFromState = (convId: string) => {
     setConversationsList((prev) => {
       const updated = prev.filter((c) => c.id !== convId);
+      if (viewConversationId === convId) {
+        if (updated.length > 0) {
+          const nextConv = updated[0];
+          setViewConversationId(nextConv.id ?? null);
+          if (nextConv?.id) localStorage.setItem('activeConversationId', nextConv.id);
+        } else {
+          setViewConversationId(null);
+          localStorage.removeItem('activeConversationId');
+          setViewDocument({ title: '', content: '', isStreaming: false });
+        }
+      }
+
       if (conversationId === convId) {
         if (updated.length > 0) {
           const nextConv = updated[0];
@@ -632,6 +693,7 @@ export default function ChatPage() {
           setMessages([]);
           localStorage.removeItem('activeConversationId');
           setDocument({ title: '', content: '', isStreaming: false });
+          setViewDocument({ title: '', content: '', isStreaming: false });
         }
       }
       return updated;
@@ -711,24 +773,30 @@ export default function ChatPage() {
   };
 
   const handleDocumentEdit = async (updated: DocumentState) => {
-    setDocument(updated);
+    setViewDocument(updated);
+    if (viewConversationId === conversationId) {
+      setDocument(updated);
+    }
 
     // Update local conversations list state
-    if (conversationId) {
+    if (viewConversationId) {
       setConversationsList((prev) =>
         prev.map((c) =>
-          c.id === conversationId ? { ...c, document_content: updated.content } : c
+          c.id === viewConversationId ? { ...c, document_content: updated.content } : c
         )
       );
     }
 
     // Persist to backend if conversation is saved
-    if (conversationId && !String(conversationId).startsWith('local-')) {
+    if (viewConversationId && !String(viewConversationId).startsWith('local-')) {
       try {
+        const messagesForPut = viewConversationId === conversationId
+          ? messages
+          : toUIMessages(viewedConversation?.messages || []);
         await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId, messages, documentContent: updated.content }),
+          body: JSON.stringify({ conversationId: viewConversationId, messages: messagesForPut, documentContent: updated.content }),
         });
       } catch (e) {
         console.warn('Failed to persist document edit', e);
@@ -747,28 +815,30 @@ export default function ChatPage() {
       local: true,
     } as any;
     setConversationsList((prev) => [localConv, ...prev]);
-    setConversationId(localId);
-    setMessages([]);
-    // Reset document panel on new chat
-    setDocument({
-      title: '',
-      content: '',
-      isStreaming: false,
-    });
+    setViewConversationId(localId);
+    // While AI is streaming in another conversation, don't touch engine state.
+    if (status !== 'streaming') {
+      setConversationId(localId);
+      setMessages([]);
+      // Reset engine doc on new chat
+      setDocument({ title: '', content: '', isStreaming: false });
+    }
+    // Always reset the visible right panel for the newly viewed chat.
+    setViewDocument({ title: '', content: '', isStreaming: false });
     localStorage.setItem('activeConversationId', localId);
   };
 
   const handleSelectConversation = (conversation: any) => {
     if (!conversation?.id) return;
-    setConversationId(conversation.id);
-    const hydrated = toUIMessages(conversation.messages);
-    setLastSavedAssistantId(getLastAssistantId(hydrated));
-    setMessages(hydrated);
-    
-    // Load document content if available
+
+    // Always change the viewed chat immediately.
+    setViewConversationId(conversation.id);
+    localStorage.setItem('activeConversationId', conversation.id);
+
+    // Update the visible document panel for the selected chat.
     if (conversation.document_content) {
       const derived = extractTitleFromMarkdown(conversation.document_content);
-      setDocument({
+      setViewDocument({
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
           ? conversation.title
           : (derived || 'Документ'),
@@ -776,14 +846,37 @@ export default function ChatPage() {
         isStreaming: false,
       });
     } else {
-      setDocument({
-        title: '',
-        content: '',
-        isStreaming: false,
-      });
+      setViewDocument({ title: '', content: '', isStreaming: false });
     }
 
-    localStorage.setItem('activeConversationId', conversation.id);
+    // If AI is currently streaming in another chat, do NOT change engine conversation or messages.
+    if (status === 'streaming' && conversationId && conversation.id !== conversationId) {
+      return;
+    }
+
+    // Otherwise switch the engine to this chat (safe).
+    setConversationId(conversation.id);
+    const hydrated = toUIMessages(conversation.messages);
+    setLastSavedAssistantId(getLastAssistantId(hydrated));
+    setMessages(hydrated);
+
+    // Keep engine document in sync when engine chat changes.
+    if (conversation.document_content) {
+      const derived = extractTitleFromMarkdown(conversation.document_content);
+      const nextDoc = {
+        title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
+          ? conversation.title
+          : (derived || 'Документ'),
+        content: conversation.document_content,
+        isStreaming: false,
+      } as DocumentState;
+      setDocument(nextDoc);
+      setViewDocument(nextDoc);
+    } else {
+      const emptyDoc = { title: '', content: '', isStreaming: false } as DocumentState;
+      setDocument(emptyDoc);
+      setViewDocument(emptyDoc);
+    }
   };
 
   return (
@@ -814,7 +907,7 @@ export default function ChatPage() {
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
           conversations={conversationsList}
-          activeId={conversationId}
+          activeId={viewConversationId}
           onSelect={handleSelectConversation}
           onNewLocal={handleNewLocalConversation}
           onRename={handleRenameConversation}
@@ -826,12 +919,18 @@ export default function ChatPage() {
         <div className="flex flex-col w-[600px] border-r shrink-0">
           <ConversationArea
             chatKey={chatKey}
-            messages={messages}
-            status={status}
+            messages={displayMessages}
+            status={displayStatus}
             copiedId={copiedId}
-            onRegenerate={handleRegenerate}
+            onRegenerate={(id) => {
+              if (viewConversationId !== conversationId) return;
+              handleRegenerate(id);
+            }}
             onCopy={handleCopy}
-            onEdit={handleEdit}
+            onEdit={(id, content) => {
+              if (viewConversationId !== conversationId) return;
+              handleEdit(id, content);
+            }}
           />
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t p-4">
@@ -843,7 +942,7 @@ export default function ChatPage() {
                 status={status}
                 authUser={authUser}
                 conversationId={conversationId}
-                setConversationId={setConversationId}
+                setConversationId={setConversationIdAndView}
                 setConversationsList={setConversationsList}
                 setMessages={setMessages}
                 sendMessage={sendMessage}
@@ -861,7 +960,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={document} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} />
+        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} />
       </div>
     </div>
   );

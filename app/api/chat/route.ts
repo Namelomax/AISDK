@@ -515,6 +515,7 @@ export async function POST(req: Request) {
 
   const agentContext: AgentContext = {
     messages: coreMessages,
+    uiMessages: normalizedMessagesNonEmpty,
     userPrompt: userPrompt,
     userId,
     conversationId,

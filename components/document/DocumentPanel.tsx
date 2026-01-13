@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useRef, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -13,33 +13,12 @@ import {
   PresentationIcon,
   X,
 } from 'lucide-react';
-import { Response } from '@/components/ai-elements/response';
 import remarkBreaks from 'remark-breaks';
+
+import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
-import { MermaidDiagram } from '@/components/document/MermaidDiagram';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
-
-const formatDocumentContent = (raw: string) => {
-  if (!raw) return '';
-  const normalized = raw.replace(/\r\n?/g, '\n');
-  // Preserve manual indentation by converting leading spaces on each line to non-breaking spaces
-  return normalized.replace(/^(\s+)/gm, (m) => m.replace(/ /g, '\u00A0'));
-};
-
-type DocumentPanelProps = {
-  document: DocumentState;
-  onCopy?: (payload: { title: string; content: string }) => void;
-  onEdit?: (payload: DocumentState) => void;
-  attachments?: Attachment[];
-  diagramState?: ProcessDiagramState | null;
-};
-
-export type Attachment = {
-  id?: string;
-  name?: string;
-  url?: string;
-  mediaType?: string;
-};
+import { LocalFlowDiagram } from '@/components/document/LocalFlowDiagram';
 
 export type DocumentState = {
   title: string;
@@ -66,455 +45,43 @@ export type ProcessDiagramState = {
   updatedAt?: string;
 };
 
-type DocumentViewMode = 'document' | 'diagram';
-
-type OutlineNode = {
-  text: string;
-  level: number;
-  children: OutlineNode[];
+export type Attachment = {
+  id?: string;
+  name?: string;
+  url?: string;
+  mediaType?: string;
+  bytes?: number;
 };
 
-function escapeHtml(input: string) {
-  return String(input || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+type DocumentViewMode = 'document' | 'diagram';
+
+type DocumentPanelProps = {
+  document: DocumentState;
+  onCopy?: (payload: { title: string; content: string }) => void;
+  onEdit?: (payload: DocumentState) => void;
+  attachments?: Attachment[];
+  diagramState?: ProcessDiagramState | null;
+};
+
+function formatDocumentContent(raw: string) {
+  if (!raw) return '';
+  const normalized = raw.replace(/\r\n?/g, '\n');
+  // Preserve manual indentation by converting leading spaces on each line to non-breaking spaces
+  return normalized.replace(/^(\s+)/gm, (m) => m.replace(/ /g, '\u00A0'));
 }
 
-function escapeHtmlAttr(input: string) {
-  return escapeHtml(input)
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function escapeMermaidString(input: string) {
-  // Mermaid label strings like ["..."] don't reliably support backslash-escaped quotes.
-  // Since we render HTML labels, encode quotes as HTML entities instead.
-  return String(input || '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/"/g, '&quot;')
-    .replace(/\n/g, ' ');
-}
-
-function wrapWords(input: string, maxCharsPerLine: number) {
-  const text = String(input || '').trim().replace(/\s+/g, ' ');
-  if (!text) return [] as string[];
-
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let current = '';
-
-  for (const w of words) {
-    if (!current) {
-      current = w;
-      continue;
-    }
-    if ((current + ' ' + w).length <= maxCharsPerLine) {
-      current = current + ' ' + w;
-    } else {
-      lines.push(current);
-      current = w;
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
-}
-
-function stripBasicMarkdown(input: string) {
-  return String(input || '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
-    .replace(/`(.+?)`/g, '$1')
-    .replace(/^\s*[-*+]\s+/, '')
-    .trim();
-}
-
-function pickEmojiForLabel(input: string) {
-  const t = stripBasicMarkdown(input).toLowerCase();
-  if (!t) return '';
-
-  // Roles / people
-  if (t.includes('актор') || t.includes('директор') || t.includes('ответствен')) return '👤';
-  if (t.includes('смежник') || t.includes('участник') || t.includes('жюри') || t.includes('команда')) return '👥';
-
-  // Artifacts / tools
-  if (t.includes('регламент') || t.includes('документ') || t.includes('положение')) return '📄';
-  if (t.includes('платформ') || t.includes('it') || t.includes('контест') || t.includes('yandex') || t.includes('codeforces')) return '💻';
-  if (t.includes('задач') || t.includes('тест')) return '🧩';
-  if (t.includes('продвиж') || t.includes('публикац') || t.includes('постер') || t.includes('приглаш')) return '📣';
-  if (t.includes('срок') || t.includes('дата') || t.includes('время')) return '🗓️';
-
-  return '';
-}
-
-function buildMermaidLabel(input: string, maxCharsPerLine: number) {
-  const emoji = pickEmojiForLabel(input);
-  const plain = stripBasicMarkdown(input);
-  const withEmoji = emoji ? `${emoji} ${plain}` : plain;
-  const lines = wrapWords(withEmoji, maxCharsPerLine);
-  const html = lines.map((l) => escapeHtml(l)).join('<br/>');
-  return escapeMermaidString(html);
-}
-
-function buildMermaidHtmlLabel(
-  title: string,
-  value?: string | null,
-  options?: { maxCharsPerLine?: number; tooltip?: string | null },
-) {
-  const maxCharsPerLine = options?.maxCharsPerLine ?? 28;
-  const t = stripBasicMarkdown(title);
-  const v = stripBasicMarkdown(value || '');
-  const tooltip = (options?.tooltip ?? '').trim() || '';
-
-  const valueShort = v.length > 110 ? `${v.slice(0, 110)}…` : v;
-  const lines: string[] = [];
-  lines.push(...wrapWords(t, maxCharsPerLine));
-  if (valueShort) lines.push(...wrapWords(valueShort, maxCharsPerLine));
-
-  const inner = lines.map((l) => escapeHtml(l)).join('<br/>');
-  const html = tooltip
-    ? `<span title='${escapeHtmlAttr(tooltip)}'>${inner}</span>`
-    : inner;
-
-  return escapeMermaidString(html);
-}
-
-type MarkdownSections = Array<{ heading: string; level: number; content: string }>;
-
-function parseMarkdownSections(markdown: string): MarkdownSections {
+function extractTitleFromMarkdown(markdown?: string | null): string | null {
   const text = String(markdown || '').replace(/\r\n?/g, '\n');
+  if (!text.trim()) return null;
   const lines = text.split('\n');
-
-  const sections: MarkdownSections = [];
-  let inCodeFence = false;
-  let current: { heading: string; level: number; contentLines: string[] } | null = null;
-
-  const pushCurrent = () => {
-    if (!current) return;
-    const content = current.contentLines
-      .join('\n')
-      .replace(/^\s+|\s+$/g, '')
-      .trim();
-    sections.push({ heading: current.heading, level: current.level, content });
-    current = null;
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine ?? '';
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith('```')) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-    if (inCodeFence) continue;
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+?)\s*$/);
-    if (headingMatch) {
-      pushCurrent();
-      current = {
-        heading: headingMatch[2].trim(),
-        level: headingMatch[1].length,
-        contentLines: [],
-      };
-      continue;
-    }
-
-    if (current) current.contentLines.push(line);
-  }
-
-  pushCurrent();
-  return sections;
-}
-
-function pickSection(sections: MarkdownSections, keywords: string[]) {
-  const keys = keywords.map((k) => k.toLowerCase());
-  for (const s of sections) {
-    const h = (s.heading || '').toLowerCase();
-    if (keys.some((k) => h.includes(k))) return s;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    const m = t.match(/^#\s+(.+?)\s*$/);
+    if (m?.[1]) return m[1].trim();
+    break;
   }
   return null;
-}
-
-function extractListLikeItems(text: string): string[] {
-  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-  const items: string[] = [];
-  for (const line of lines) {
-    const m = line.match(/^\s*(?:[-*+]|\d+\.)\s+(.+?)\s*$/);
-    if (m?.[1]) items.push(m[1].trim());
-  }
-  if (items.length) return items;
-
-  // Fallback: split by semicolons/newlines, keep only meaningful chunks.
-  const raw = lines
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .join(' ');
-
-  return raw
-    .split(/\s*(?:;|\n|\r)\s*/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 6);
-}
-
-function buildSemanticMermaidDiagram(documentTitle: string, markdown: string): string {
-  const sections = parseMarkdownSections(markdown);
-  if (!sections.length) return '';
-
-  const org = pickSection(sections, ['организац', 'компан', 'о компании', 'о компании/организации']);
-  const goal = pickSection(sections, ['цель']);
-  const owner = pickSection(sections, ['владел', 'ответствен', 'owner']);
-  const product = pickSection(sections, ['продукт']);
-  const consumers = pickSection(sections, ['потребител', 'клиент', 'получател']);
-  const bounds = pickSection(sections, ['границ']);
-  const start = pickSection(sections, ['начало', 'старт', 'триггер']);
-  const end = pickSection(sections, ['конец', 'заверш', 'финиш']);
-
-  const processName = documentTitle || 'Процесс';
-
-  const hasAny = Boolean(org?.content || goal?.content || owner?.content || product?.content || consumers?.content || bounds?.content || start?.content || end?.content);
-  if (!hasAny) return '';
-
-  const lines: string[] = ['flowchart TD'];
-
-  // Core nodes
-  lines.push(`  PROC["${buildMermaidHtmlLabel('🧭 Процесс', processName, { maxCharsPerLine: 26, tooltip: processName })}"]`);
-
-  if (org) {
-    const first = extractListLikeItems(org.content)[0] || org.content;
-    lines.push(`  ORG["${buildMermaidHtmlLabel('🏢 Организация', first, { tooltip: org.content })}"]`);
-    lines.push('  ORG --> PROC');
-  }
-
-  const startText = start?.content || bounds?.content || '';
-  if (startText.trim()) {
-    const first = extractListLikeItems(startText)[0] || startText;
-    lines.push(`  START(["${buildMermaidHtmlLabel('🟢 Начало', first, { tooltip: startText })}"])`);
-    lines.push('  START --> PROC');
-  }
-
-  if (goal?.content?.trim()) {
-    const first = extractListLikeItems(goal.content)[0] || goal.content;
-    lines.push(`  GOAL["${buildMermaidHtmlLabel('🎯 Цель', first, { tooltip: goal.content })}"]`);
-    lines.push('  PROC --> GOAL');
-  }
-
-  if (owner?.content?.trim()) {
-    const first = extractListLikeItems(owner.content)[0] || owner.content;
-    // Circle/person-like node. Keep it compact; show full details in tooltip.
-    lines.push(`  OWNER(("${buildMermaidHtmlLabel('👤 Владелец', first, { maxCharsPerLine: 22, tooltip: owner.content })}"))`);
-    lines.push('  PROC --> OWNER');
-  }
-
-  if (product?.content?.trim()) {
-    const first = extractListLikeItems(product.content)[0] || product.content;
-    lines.push(`  PRODUCT["${buildMermaidHtmlLabel('📦 Продукт', first, { tooltip: product.content })}"]`);
-    lines.push('  PROC --> PRODUCT');
-  }
-
-  if (consumers?.content?.trim()) {
-    const items = extractListLikeItems(consumers.content);
-    const max = Math.min(6, items.length || 0);
-    if (max > 0) {
-      for (let i = 0; i < max; i++) {
-        const id = `CONS${i + 1}`;
-        const item = items[i];
-        lines.push(`  ${id}(("${buildMermaidHtmlLabel('👥 Потребитель', item, { maxCharsPerLine: 22, tooltip: item })}"))`);
-        lines.push(`  ${product?.content?.trim() ? 'PRODUCT' : 'PROC'} --> ${id}`);
-      }
-    } else {
-      const first = consumers.content;
-      lines.push(`  CONS1(("${buildMermaidHtmlLabel('👥 Потребитель', first, { maxCharsPerLine: 22, tooltip: consumers.content })}"))`);
-      lines.push(`  ${product?.content?.trim() ? 'PRODUCT' : 'PROC'} --> CONS1`);
-    }
-  }
-
-  const endText = end?.content || '';
-  if (endText.trim()) {
-    const first = extractListLikeItems(endText)[0] || endText;
-    lines.push(`  END(["${buildMermaidHtmlLabel('🏁 Конец', first, { tooltip: endText })}"])`);
-    lines.push('  PROC --> END');
-  }
-
-  // If there is a boundaries section and we didn't use it as START, show it as an extra context node.
-  if (bounds?.content?.trim() && !start?.content?.trim()) {
-    const first = extractListLikeItems(bounds.content)[0] || bounds.content;
-    lines.push(`  BOUNDS["${buildMermaidHtmlLabel('📍 Границы процесса', first, { tooltip: bounds.content })}"]`);
-    lines.push('  PROC --> BOUNDS');
-  }
-
-  return lines.join('\n');
-}
-
-function buildSemanticMermaidFromState(documentTitle: string, state: ProcessDiagramState | null | undefined): string {
-  const s = state || null;
-  if (!s) return '';
-
-  const orgName = (s.organization?.name || '').trim();
-  const orgActivity = (s.organization?.activity || '').trim();
-  const ownerName = (s.owner?.fullName || '').trim();
-  const ownerPos = (s.owner?.position || '').trim();
-  const goal = (s.goal || '').trim();
-  const product = (s.product || '').trim();
-  const procName = (s.process?.name || '').trim();
-  const procDesc = (s.process?.description || '').trim();
-  const start = (s.boundaries?.start || '').trim();
-  const end = (s.boundaries?.end || '').trim();
-  const consumers = Array.isArray(s.consumers) ? s.consumers : [];
-
-  // Only use state-based diagram if we actually extracted something meaningful.
-  const hasAny = Boolean(orgName || orgActivity || ownerName || ownerPos || goal || product || procName || procDesc || start || end || consumers.length);
-  if (!hasAny) return '';
-
-  const lines: string[] = ['flowchart TD'];
-  const effectiveProcessName = procName || documentTitle || 'Процесс';
-  const processTooltip = [effectiveProcessName, procDesc].filter(Boolean).join('\n');
-  lines.push(`  PROC["${buildMermaidHtmlLabel('🧭 Процесс', effectiveProcessName, { tooltip: processTooltip })}"]`);
-
-  if (orgName || orgActivity) {
-    // Requirements: organization name should look like plain text (no rectangle).
-    const shown = orgName || 'Организация';
-    const tooltip = [orgName, orgActivity].filter(Boolean).join('\n');
-    lines.push(`  ORG["${buildMermaidHtmlLabel('', shown, { tooltip })}"]`);
-    lines.push('  ORG --> PROC');
-  }
-
-  if (start) {
-    lines.push(`  START(["${buildMermaidHtmlLabel('🟢 Начало', start, { tooltip: start })}"])`);
-    lines.push('  START --> PROC');
-  }
-
-  if (goal) {
-    // Requirements: goal should look like plain text (no rectangle) + details on click.
-    const short = goal.length > 180 ? `${goal.slice(0, 180)}…` : goal;
-    lines.push(`  GOAL["${buildMermaidHtmlLabel('', `🎯 Цель: ${short}`, { tooltip: goal })}"]`);
-    lines.push('  PROC --> GOAL');
-  }
-
-  if (ownerName || ownerPos) {
-    const shown = ownerName || ownerPos;
-    const tooltip = [ownerName, ownerPos].filter(Boolean).join('\n');
-    lines.push(`  OWNER(("${buildMermaidHtmlLabel('👤 Владелец', shown || 'Владелец', { maxCharsPerLine: 22, tooltip })}"))`);
-    lines.push('  PROC --> OWNER');
-  }
-
-  if (product) {
-    lines.push(`  PRODUCT["${buildMermaidHtmlLabel('📦 Продукт', product, { tooltip: product })}"]`);
-    lines.push('  PROC --> PRODUCT');
-  }
-
-  if (consumers.length) {
-    const max = Math.min(6, consumers.length);
-    for (let i = 0; i < max; i++) {
-      const c = consumers[i] || ({} as any);
-      const label =
-        typeof c === 'string'
-          ? String(c).trim()
-          : (String((c as any).fullName || (c as any).name || '').trim() || 'Потребитель');
-      const extra = typeof c === 'string' ? '' : String((c as any).position || '').trim();
-      const tooltip = [label, extra].filter(Boolean).join('\n');
-      const id = `CONS${i + 1}`;
-      lines.push(`  ${id}(("${buildMermaidHtmlLabel('👥 Потребитель', label, { maxCharsPerLine: 22, tooltip })}"))`);
-      lines.push(`  ${product ? 'PRODUCT' : 'PROC'} --> ${id}`);
-    }
-  }
-
-  if (end) {
-    lines.push(`  END(["${buildMermaidHtmlLabel('🏁 Конец', end, { tooltip: end })}"])`);
-    lines.push('  PROC --> END');
-  }
-
-  // Text-only styling for specific nodes.
-  lines.push('');
-  lines.push('  classDef textOnly fill:none,stroke:none;');
-  lines.push('  class ORG,GOAL textOnly;');
-
-  return lines.join('\n');
-}
-
-function parseMarkdownToOutline(markdown: string): OutlineNode[] {
-  const text = String(markdown || '').replace(/\r\n?/g, '\n');
-  const lines = text.split('\n');
-
-  const root: OutlineNode = { text: '__root__', level: 0, children: [] };
-  const stack: OutlineNode[] = [root];
-  let inCodeFence = false;
-  let lastHeadingLevel = 1;
-
-  for (const rawLine of lines) {
-    const line = rawLine ?? '';
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    if (trimmed.startsWith('```')) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-    if (inCodeFence) continue;
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+?)\s*$/);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const text = headingMatch[2].trim();
-      if (!text) continue;
-      lastHeadingLevel = level;
-
-      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
-        stack.pop();
-      }
-      const parent = stack[stack.length - 1] || root;
-      const node: OutlineNode = { text, level, children: [] };
-      parent.children.push(node);
-      stack.push(node);
-      continue;
-    }
-
-    const listMatch = line.match(/^(\s*)(?:[-*+]|\d+\.)\s+(.+?)\s*$/);
-    if (listMatch) {
-      const indent = (listMatch[1] || '').replace(/\t/g, '    ').length;
-      const depth = Math.floor(indent / 2);
-      const level = Math.min(20, lastHeadingLevel + 1 + depth);
-      const text = listMatch[2].trim();
-      if (!text) continue;
-
-      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
-        stack.pop();
-      }
-      const parent = stack[stack.length - 1] || root;
-      const node: OutlineNode = { text, level, children: [] };
-      parent.children.push(node);
-      stack.push(node);
-      continue;
-    }
-  }
-
-  return root.children;
-}
-
-function outlineToMermaidFlowchart(title: string, outline: OutlineNode[]): string {
-  const safeTitle = title || 'Документ';
-  const lines: string[] = ['flowchart TD'];
-  const makeId = (() => {
-    let i = 0;
-    return () => `n${i++}`;
-  })();
-
-  const rootId = makeId();
-  lines.push(`  ${rootId}["${buildMermaidLabel(safeTitle, 34)}"]`);
-
-  const emit = (parentId: string, nodes: OutlineNode[]) => {
-    for (const node of nodes) {
-      const id = makeId();
-      const label = buildMermaidLabel(node.text, 34);
-      lines.push(`  ${id}["${label}"]`);
-      lines.push(`  ${parentId} --> ${id}`);
-      if (node.children?.length) emit(id, node.children);
-    }
-  };
-
-  emit(rootId, outline);
-  return lines.join('\n');
 }
 
 function sanitizeFilename(input: string, fallback: string) {
@@ -573,7 +140,10 @@ function getAttachmentIcon(att: Attachment, className?: string) {
   if (isSpreadsheet) return <FileSpreadsheetIcon className={className ? `size-4 ${className}` : 'size-4'} />;
 
   const isDocLike =
-    mt.includes('pdf') || mt.includes('word') || mt.includes('text') || ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
+    mt.includes('pdf') ||
+    mt.includes('word') ||
+    mt.includes('text') ||
+    ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
   if (isDocLike) return <FileText className={className ? `size-4 ${className}` : 'size-4'} />;
 
   return <Paperclip className={className ? `size-4 ${className}` : 'size-4'} />;
@@ -584,23 +154,204 @@ function isImageAttachment(att: Attachment) {
   const ext = getFileExt(name);
   const mt = String(att?.mediaType || '').toLowerCase();
   return Boolean(
-    (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) &&
-      att?.url
+    (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) && att?.url
   );
 }
 
-function extractTitleFromMarkdown(markdown?: string | null): string | null {
-  const text = String(markdown || '').replace(/\r\n?/g, '\n');
-  if (!text.trim()) return null;
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) continue;
-    const m = t.match(/^#\s+(.+?)\s*$/);
-    if (m?.[1]) return m[1].trim();
-    break;
+function escapeXml(input: string) {
+  return String(input || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function wrapForDrawioLabel(input: string) {
+  const t = String(input || '').trim();
+  if (!t) return '';
+  // mxGraph labels accept HTML when html=1, but draw.io files are XML.
+  // That means the label must be XML-escaped: `<br/>` must become `&lt;br/&gt;`.
+  // We first inject `<br/>` (for draw.io's HTML labels), then escape as XML.
+  return escapeXml(t.replace(/\r\n?|\n/g, '<br/>'));
+}
+
+function buildDrawioXmlFromState(documentTitle: string, state: ProcessDiagramState | null | undefined): string {
+  const s = state || null;
+  if (!s) return '';
+
+  const short = (input: any, max = 72) => {
+    const t = String(input ?? '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    if (t.length <= max) return t;
+    return `${t.slice(0, Math.max(0, max - 1))}…`;
+  };
+
+  const orgName = String(s.organization?.name || '').trim();
+  const orgActivity = String(s.organization?.activity || '').trim();
+  const procName = String(s.process?.name || '').trim();
+  const procDesc = String(s.process?.description || '').trim();
+  const ownerName = String(s.owner?.fullName || '').trim();
+  const ownerPos = String(s.owner?.position || '').trim();
+  const goal = String(s.goal || '').trim();
+  const product = String(s.product || '').trim();
+  const start = String(s.boundaries?.start || '').trim();
+  const end = String(s.boundaries?.end || '').trim();
+  const consumers = Array.isArray(s.consumers) ? s.consumers : [];
+
+  const hasAny = Boolean(
+    orgName ||
+      orgActivity ||
+      procName ||
+      procDesc ||
+      ownerName ||
+      ownerPos ||
+      goal ||
+      product ||
+      start ||
+      end ||
+      consumers.length
+  );
+  if (!hasAny) return '';
+
+  const processTitle = procName || documentTitle || 'Процесс';
+
+  // Layout resembles a "project/process scheme":
+  // - Context (org / owner / goal) grouped, not necessarily connected.
+  // - Process flow (start -> process -> product -> end).
+  // - Consumers grouped separately.
+  const canvasW = 1200;
+  const canvasH = 800;
+
+  const node = (
+    id: string,
+    value: string,
+    style: string,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    parentId: string = '1'
+  ) => {
+    const v = wrapForDrawioLabel(value);
+    return `    <mxCell id="${escapeXml(id)}" value="${v}" style="${escapeXml(style)}" vertex="1" parent="${escapeXml(parentId)}">\n      <mxGeometry x="${x}" y="${y}" width="${w}" height="${h}" as="geometry"/>\n    </mxCell>`;
+  };
+
+  const edge = (id: string, source: string, target: string, style: string) => {
+    return `    <mxCell id="${escapeXml(id)}" style="${escapeXml(style)}" edge="1" parent="1" source="${escapeXml(source)}" target="${escapeXml(target)}">\n      <mxGeometry relative="1" as="geometry"/>\n    </mxCell>`;
+  };
+
+  const styles = {
+    group: 'group=1;rounded=0;whiteSpace=wrap;html=1;fillColor=none;align=left;verticalAlign=top;spacing=10;',
+    process: 'rounded=0;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
+    terminator: 'shape=terminator;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
+    ellipse: 'ellipse;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
+    // Text blocks without outlines.
+    textOnlyLeft: 'text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;',
+    // Small clickable tag-like blocks.
+    tag: 'rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacing=8;',
+    // Owner label: icon + text, no oval.
+    ownerLabel: 'text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;spacingLeft=28;ownerIcon=1;',
+    edge: 'endArrow=block;endFill=1;html=1;rounded=0;',
+  };
+
+  const cells: string[] = [];
+  const edges: string[] = [];
+
+  // Group containers (outline only)
+  // Note: groups are vertices too; local renderer draws them as transparent outlines.
+  const context = { id: 'GROUP_CONTEXT', x: 40, y: 20, w: 760, h: 140 };
+  const flow = { id: 'GROUP_FLOW', x: 40, y: 180, w: 760, h: 560 };
+  const consumersG = { id: 'GROUP_CONSUMERS', x: 820, y: 180, w: 340, h: 560 };
+
+  cells.push(node(context.id, 'Контекст', styles.group, context.x, context.y, context.w, context.h));
+  cells.push(node(flow.id, processTitle || 'Процесс', styles.group, flow.x, flow.y, flow.w, flow.h));
+  cells.push(node(consumersG.id, 'Потребители', styles.group, consumersG.x, consumersG.y, consumersG.w, consumersG.h));
+
+  // Organization (collapsed: name only; activity in details drawer)
+  if (orgName || orgActivity) {
+    const label = orgName ? `Организация: ${orgName}` : 'Организация';
+    cells.push(node('ORG', label, styles.textOnlyLeft, 15, 42, 700, 40, context.id));
   }
-  return null;
+
+  // Goal (collapsed: label only; full goal in details drawer)
+  if (goal) {
+    cells.push(node('GOAL', `Цель: ${short(goal)}`, styles.tag, 15, 84, 260, 50, context.id));
+  }
+
+  // Owner appears only when the role/position is known.
+  // If we only have a name without a role, do not render it (avoids the "fio without role" issue).
+  if (ownerPos) {
+    const ownerLabel = [ownerName, ownerPos].filter(Boolean).join(' - ');
+    // Place within context group.
+    cells.push(node('OWNER', ownerLabel || ownerPos, styles.ownerLabel, 320, 84, 420, 50, context.id));
+  }
+
+  // Flow nodes
+  const flowX = 260;
+  const flowW = 440;
+  const startY = 70;
+  const gapY = 130;
+
+  if (start) {
+    cells.push(node('START', 'Начало', styles.terminator, 50, startY, 220, 70, flow.id));
+  }
+
+  // Process (collapsed: title only; description in details drawer)
+  cells.push(node('PROC', `Процесс: ${processTitle}`, styles.process, flowX, startY, flowW, 110, flow.id));
+
+  if (product) {
+    cells.push(node('PRODUCT', `Продукт: ${short(product)}`, styles.process, flowX, startY + gapY, flowW, 100, flow.id));
+  }
+
+  if (end) {
+    cells.push(node('END', 'Конец', styles.terminator, flowX, startY + gapY * 2, flowW, 70, flow.id));
+  }
+
+  // Minimal arrows, like a flow.
+  if (start) edges.push(edge('E_START_PROC', 'START', 'PROC', styles.edge));
+  if (product) edges.push(edge('E_PROC_PRODUCT', 'PROC', 'PRODUCT', styles.edge));
+  if (product && end) edges.push(edge('E_PRODUCT_END', 'PRODUCT', 'END', styles.edge));
+
+  // Consumers (collapsed labels; details in drawer)
+  if (consumers.length) {
+    const max = Math.min(10, consumers.length);
+    for (let i = 0; i < max; i++) {
+      const c: any = consumers[i];
+      const kind = typeof c === 'string' ? '' : String(c?.kind || '').trim();
+      const label = typeof c === 'string' ? String(c).trim() : String(c?.fullName || c?.name || '').trim();
+      const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
+      const shown = [label || (kind === 'org' ? 'Организация' : kind === 'group' ? 'Группа' : 'Персона'), extra]
+        .filter(Boolean)
+        .join('\n');
+      const id = `CONS${i + 1}`;
+      const x = 30;
+      const y = 60 + i * 90;
+      cells.push(node(id, shown, styles.ellipse, x, y, 280, 70, consumersG.id));
+      if (product) edges.push(edge(`E_PRODUCT_${id}`, 'PRODUCT', id, styles.edge));
+    }
+  }
+
+  const mxGraphModelXml = [
+    `<mxGraphModel dx="${canvasW}" dy="${canvasH}" grid="1" gridSize="10" guides="1" tooltips="1" connect="0" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">`,
+    '  <root>',
+    '    <mxCell id="0"/>',
+    '    <mxCell id="1" parent="0"/>',
+    ...cells,
+    ...edges,
+    '  </root>',
+    '</mxGraphModel>',
+  ].join('\n');
+
+  const now = new Date().toISOString();
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<mxfile host="app.diagrams.net" modified="${escapeXml(now)}" agent="AISDK" version="22.1.0" type="device">`,
+    '  <diagram id="diagram-1" name="Page-1">',
+    `    ${mxGraphModelXml.replace(/\n/g, '\n    ')}`,
+    '  </diagram>',
+    '</mxfile>',
+  ].join('\n');
 }
 
 export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramState }: DocumentPanelProps) => {
@@ -629,6 +380,82 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [document.content, document.isStreaming]);
+
+  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
+
+  const displayTitle = (() => {
+    const raw = String(localDoc.title || '').trim();
+    if (localDoc.isStreaming) {
+      return raw || 'Генерация документа…';
+    }
+
+    const generic =
+      !raw ||
+      raw.toLowerCase() === 'чат' ||
+      raw.toLowerCase() === 'документ' ||
+      raw.toLowerCase() === 'пример документа';
+    const fromContent = extractTitleFromMarkdown(localDoc.content);
+    return generic && fromContent ? fromContent : raw || 'Пример документа';
+  })();
+
+  const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
+
+  const formattedContent = useMemo(() => formatDocumentContent(viewContent), [viewContent]);
+
+  const drawioXml = useMemo(() => buildDrawioXmlFromState(displayTitle, diagramState), [displayTitle, diagramState]);
+
+  const selectedDetails = useMemo(() => {
+    const id = (selectedDiagramNodeId || '').toUpperCase();
+    if (!id) return null;
+
+    if (id.startsWith('GROUP_')) return null;
+
+    const s = diagramState || null;
+    const getConsumersArray = () => (Array.isArray(s?.consumers) ? s!.consumers! : []);
+
+    const build = (title: string, body: string) => {
+      const cleaned = String(body || '').trim();
+      return cleaned ? { title, body: cleaned } : null;
+    };
+
+    if (id === 'PROC') {
+      const name = String(s?.process?.name || '').trim();
+      const desc = String(s?.process?.description || '').trim();
+      return build('Процесс', [name, desc].filter(Boolean).join('\n\n'));
+    }
+    if (id === 'ORG') {
+      const name = String(s?.organization?.name || '').trim();
+      const activity = String(s?.organization?.activity || '').trim();
+      return build('Организация', [name, activity].filter(Boolean).join('\n\n'));
+    }
+    if (id === 'GOAL') {
+      return build('Цель', String(s?.goal || '').trim());
+    }
+    if (id === 'OWNER') {
+      const fullName = String(s?.owner?.fullName || '').trim();
+      const position = String(s?.owner?.position || '').trim();
+      return build('Владелец', [fullName, position].filter(Boolean).join('\n'));
+    }
+    if (id === 'PRODUCT') {
+      return build('Продукт', String(s?.product || '').trim());
+    }
+    if (id === 'START') {
+      return build('Начало', String(s?.boundaries?.start || '').trim());
+    }
+    if (id === 'END') {
+      return build('Конец', String(s?.boundaries?.end || '').trim());
+    }
+    const m = id.match(/^CONS(\d+)$/i);
+    if (m?.[1]) {
+      const idx = Math.max(0, Number(m[1]) - 1);
+      const c = getConsumersArray()[idx] as any;
+      const label = typeof c === 'string' ? String(c).trim() : String(c?.fullName || c?.name || '').trim();
+      const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
+      return build('Потребитель', [label, extra].filter(Boolean).join('\n'));
+    }
+
+    return null;
+  }, [diagramState, selectedDiagramNodeId]);
 
   const handleCopy = async () => {
     const formatted = `# ${displayTitle}\n\n${viewContent}`;
@@ -733,94 +560,6 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
     }
   };
 
-  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
-
-  const displayTitle = (() => {
-    const raw = String(localDoc.title || '').trim();
-    if (localDoc.isStreaming) {
-      return raw || 'Генерация документа…';
-    }
-
-    const generic =
-      !raw ||
-      raw.toLowerCase() === 'чат' ||
-      raw.toLowerCase() === 'документ' ||
-      raw.toLowerCase() === 'пример документа';
-    const fromContent = extractTitleFromMarkdown(localDoc.content);
-    return generic && fromContent ? fromContent : (raw || 'Пример документа');
-  })();
-
-  const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
-
-  const diagramSource = editing ? draftContent : viewContent;
-  const mermaidCode = useMemo(() => {
-
-      const diagramDetails = useMemo(() => {
-        const id = (selectedDiagramNodeId || '').toUpperCase();
-        if (!id) return null;
-
-        const s = diagramState || null;
-        const getConsumersArray = () => (Array.isArray(s?.consumers) ? s!.consumers! : []);
-
-        const build = (title: string, body: string) => {
-          const cleaned = String(body || '').trim();
-          return cleaned ? { title, body: cleaned } : null;
-        };
-
-        if (id === 'PROC') {
-          const name = String(s?.process?.name || document.title || '').trim();
-          const desc = String(s?.process?.description || '').trim();
-          return build('Процесс', [name, desc].filter(Boolean).join('\n\n'));
-        }
-        if (id === 'ORG') {
-          const name = String(s?.organization?.name || '').trim();
-          const activity = String(s?.organization?.activity || '').trim();
-          return build('Организация', [name, activity].filter(Boolean).join('\n\n'));
-        }
-        if (id === 'GOAL') {
-          return build('Цель', String(s?.goal || '').trim());
-        }
-        if (id === 'OWNER') {
-          const fullName = String(s?.owner?.fullName || '').trim();
-          const position = String(s?.owner?.position || '').trim();
-          return build('Владелец', [fullName, position].filter(Boolean).join('\n'));
-        }
-        if (id === 'PRODUCT') {
-          return build('Продукт', String(s?.product || '').trim());
-        }
-        if (id === 'START') {
-          return build('Начало', String(s?.boundaries?.start || '').trim());
-        }
-        if (id === 'END') {
-          return build('Конец', String(s?.boundaries?.end || '').trim());
-        }
-        const m = id.match(/^CONS(\d+)$/i);
-        if (m?.[1]) {
-          const idx = Math.max(0, Number(m[1]) - 1);
-          const c = getConsumersArray()[idx] as any;
-          const label =
-            typeof c === 'string'
-              ? String(c).trim()
-              : String(c?.fullName || c?.name || '').trim();
-          const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
-          return build('Потребитель', [label, extra].filter(Boolean).join('\n'));
-        }
-
-        return null;
-      }, [diagramState, document.title, selectedDiagramNodeId]);
-    const stateDiagram = buildSemanticMermaidFromState(displayTitle, diagramState || null);
-    if (stateDiagram) return stateDiagram;
-
-    const semantic = buildSemanticMermaidDiagram(displayTitle, diagramSource);
-    if (semantic) return semantic;
-
-    const outline = parseMarkdownToOutline(diagramSource);
-    if (!outline.length) return '';
-    return outlineToMermaidFlowchart(displayTitle, outline);
-  }, [diagramSource, displayTitle, diagramState]);
-
-  const formattedContent = formatDocumentContent(viewContent);
-
   const startEdit = () => {
     setEditing(true);
     setDraftTitle(localDoc.title);
@@ -847,13 +586,13 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
   return (
     <div className="flex-1 bg-background border-l overflow-hidden flex flex-col">
       <div className="flex items-center justify-between p-4 border-b bg-background z-10">
-        <h2 className="text-xl font-semibold truncate" title={displayTitle}>{displayTitle}</h2>
+        <h2 className="text-xl font-semibold truncate" title={displayTitle}>
+          {displayTitle}
+        </h2>
 
         <div className="flex items-center gap-2 shrink-0">
           {document.isStreaming && (
-            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 animate-pulse">
-              Генерация...
-            </span>
+            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 animate-pulse">Генерация...</span>
           )}
 
           {!editing && (
@@ -961,44 +700,40 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
         ) : (
           <>
             <div className={viewMode === 'diagram' ? '' : 'hidden'}>
-              <MermaidDiagram
-                className="w-full h-[60vh]"
-                code={mermaidCode}
-                ariaLabel="Схема документа"
-                enableNodeClickZoom={false}
-                onNodeClick={(nodeId) => {
-                  setSelectedDiagramNodeId((prev) => (prev?.toUpperCase() === nodeId.toUpperCase() ? null : nodeId));
-                }}
-              />
+              {drawioXml ? (
+                <LocalFlowDiagram
+                  className="w-full h-[60vh]"
+                  xml={drawioXml}
+                  ariaLabel="Схема документа"
+                  onNodeClick={(nodeId) => {
+                    setSelectedDiagramNodeId((prev) => (prev?.toUpperCase() === nodeId.toUpperCase() ? null : nodeId));
+                  }}
+                />
+              ) : (
+                <div className="rounded-md border bg-muted/20 p-4 text-sm text-muted-foreground">
+                  Недостаточно данных для схемы. Продолжайте диалог — схема заполняется из фактов чата.
+                </div>
+              )}
 
-              <Collapsible open={Boolean(diagramDetails)}>
+              <Collapsible open={Boolean(selectedDetails)}>
                 <CollapsibleContent>
-                  {diagramDetails ? (
+                  {selectedDetails ? (
                     <div className="mt-3 rounded-md border bg-background p-3">
                       <div className="flex items-start justify-between gap-2">
-                        <div className="text-sm font-semibold">{diagramDetails.title}</div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setSelectedDiagramNodeId(null)}
-                        >
+                        <div className="text-sm font-semibold">{selectedDetails.title}</div>
+                        <Button type="button" size="sm" variant="outline" onClick={() => setSelectedDiagramNodeId(null)}>
                           Скрыть
                         </Button>
                       </div>
-                      <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">
-                        {diagramDetails.body}
-                      </div>
+                      <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">{selectedDetails.body}</div>
                     </div>
                   ) : null}
                 </CollapsibleContent>
               </Collapsible>
             </div>
+
             <div className={viewMode === 'document' ? '' : 'hidden'}>
-              <Response
-                className="prose prose-sm max-w-none dark:prose-invert"
-                remarkPlugins={[remarkBreaks]}
-              >
+              <Response className="prose prose-sm max-w-none dark:prose-invert" remarkPlugins={[remarkBreaks]}>
                 {formattedContent}
               </Response>
             </div>
@@ -1013,73 +748,65 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
           </div>
           <div className="mt-2 max-h-40 overflow-y-auto no-scrollbar pr-1">
             <div className="flex flex-wrap gap-2">
-            {attachments.map((att, idx) => {
-              const name = att?.name || 'attachment';
-              const canDownload = Boolean(att?.url);
-              const extension = (att?.name || '').split('.').pop()?.toUpperCase();
-              const showImage = isImageAttachment(att);
-              const accent = getAttachmentAccentClass(att);
+              {attachments.map((att, idx) => {
+                const name = att?.name || 'attachment';
+                const canDownload = Boolean(att?.url);
+                const extension = (att?.name || '').split('.').pop()?.toUpperCase();
+                const showImage = isImageAttachment(att);
+                const accent = getAttachmentAccentClass(att);
 
-              return (
-                <div
-                  key={att?.id || `${name}-${idx}`}
-                  className={`group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20 transition-colors ${canDownload ? 'cursor-pointer hover:bg-muted/30' : ''}`}
-                  title={name}
-                  role={canDownload ? 'button' : undefined}
-                  tabIndex={canDownload ? 0 : -1}
-                  onClick={() => {
-                    if (!canDownload) return;
-                    handleDownloadAttachment(att);
-                  }}
-                  onKeyDown={(e) => {
-                    if (!canDownload) return;
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleDownloadAttachment(att);
-                    }
-                  }}
-                >
-                  {showImage ? (
-                    <img
-                      alt={name}
-                      className="size-full rounded-md object-cover"
-                      height={56}
-                      src={att?.url}
-                      width={56}
-                    />
-                  ) : (
-                    <div className="flex size-full flex-col items-center justify-center gap-1">
-                      <span className={accent}>{getAttachmentIcon(att, accent)}</span>
-                      <span className="text-[10px] font-medium uppercase tracking-wide">
-                        {extension || 'FILE'}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                    <span className="truncate" title={name}>
-                      {name}
-                    </span>
-                  </div>
-
-                  <Button
-                    aria-label="Скачать файл"
-                    className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
-                    disabled={!canDownload}
-                    onClick={(e) => {
-                      e.stopPropagation();
+                return (
+                  <div
+                    key={att?.id || `${name}-${idx}`}
+                    className={`group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20 transition-colors ${canDownload ? 'cursor-pointer hover:bg-muted/30' : ''}`}
+                    title={name}
+                    role={canDownload ? 'button' : undefined}
+                    tabIndex={canDownload ? 0 : -1}
+                    onClick={() => {
+                      if (!canDownload) return;
                       handleDownloadAttachment(att);
                     }}
-                    size="icon"
-                    type="button"
-                    variant="outline"
-                    title="Скачать файл"
+                    onKeyDown={(e) => {
+                      if (!canDownload) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleDownloadAttachment(att);
+                      }
+                    }}
                   >
-                    <Download className="h-3 w-3" />
-                  </Button>
-                </div>
-              );
-            })}
+                    {showImage ? (
+                      <img alt={name} className="size-full rounded-md object-cover" height={56} src={att?.url} width={56} />
+                    ) : (
+                      <div className="flex size-full flex-col items-center justify-center gap-1">
+                        <span className={accent}>{getAttachmentIcon(att, accent)}</span>
+                        <span className="text-[10px] font-medium uppercase tracking-wide">{extension || 'FILE'}</span>
+                      </div>
+                    )}
+
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="truncate" title={name}>
+                        {name}
+                      </span>
+                    </div>
+
+                    <Button
+                      aria-label="Скачать файл"
+                      className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
+                      disabled={!canDownload}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDownloadAttachment(att);
+                      }}
+                      size="icon"
+                      type="button"
+                      variant="outline"
+                      title="Скачать файл"
+                    >
+                      <Download className="h-3 w-3" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

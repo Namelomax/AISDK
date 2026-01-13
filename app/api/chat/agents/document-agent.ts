@@ -98,11 +98,25 @@ function extractSectionBody(markdown: string, headingQuery: string): string | nu
 }
 
 export async function runDocumentAgent(context: AgentContext) {
-  const { messages, model, userPrompt, documentContent, userId, conversationId } = context;
+  const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId } = context;
   let generatedDocumentContent = '';
 
+  const safeOriginalUIMessages = (() => {
+    if (Array.isArray(uiMessages) && uiMessages.length > 0) return uiMessages as any;
+    // Minimal fallback shape expected by `createUIMessageStream`.
+    return (Array.isArray(messages) ? messages : []).map((m: any, idx: number) => {
+      const text = typeof m?.content === 'string' ? m.content : '';
+      return {
+        id: String(m?.id ?? `m-${idx}-${Date.now()}`),
+        role: m?.role === 'assistant' ? 'assistant' : 'user',
+        parts: [{ type: 'text', text }],
+        metadata: m?.metadata ?? {},
+      };
+    });
+  })();
+
   const stream = createUIMessageStream({
-    originalMessages: messages as any,
+    originalMessages: safeOriginalUIMessages,
     execute: async ({ writer }) => {
       try {
         generatedDocumentContent = await generateFinalDocument(
@@ -150,11 +164,10 @@ async function generateFinalDocument(
   existingDocument?: string,
   temperature: number = 0.1,
 ): Promise<string> {
-  // AI SDK v5 data stream expects `type: 'data'`.
-  // We wrap our existing custom events (data-title, data-documentDelta, etc.)
-  // so the client can handle them reliably without breaking the stream.
-  const writeData = (payload: any) => {
-    dataStream.write({ type: 'data', data: payload });
+  // `createUIMessageStream` expects stream parts that match its schema.
+  // Custom parts must have `type` starting with `data-` and a `data` field.
+  const writeData = (payload: { type: string; data: any }) => {
+    dataStream.write({ type: payload.type, data: payload.data });
   };
 
   const lastUserTextRaw = (() => {
@@ -397,8 +410,8 @@ ${effectiveEditText}
             : stripLeadingMarkdownHeading(acc);
 
         dataStream.write({
-          type: 'data',
-          data: { type: 'data-documentPatch', data: { heading, mode: 'replace', content: streamedBody } satisfies DocumentPatch },
+          type: 'data-documentPatch',
+          data: { heading, mode: 'replace', content: streamedBody } satisfies DocumentPatch,
         });
       }
 
