@@ -9,6 +9,8 @@ type MermaidDiagramProps = {
   code: string;
   className?: string;
   ariaLabel?: string;
+  enableNodeClickZoom?: boolean;
+  onNodeClick?: (nodeId: string) => void;
 };
 
 type ViewportTransform = {
@@ -45,12 +47,13 @@ function readSvgViewport(svgEl: SVGSVGElement | null): { width: number; height: 
   return { width: 800, height: 600 };
 }
 
-export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramProps) {
+export function MermaidDiagram({ code, className, ariaLabel, enableNodeClickZoom = true, onNodeClick }: MermaidDiagramProps) {
   const unique = useId();
   const renderId = useMemo(() => `mermaid-${unique.replace(/[:]/g, '')}`, [unique]);
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [copied, setCopied] = useState(false);
+
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -59,9 +62,28 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
   const dragState = useRef<{ active: boolean; pointerId: number | null; lastX: number; lastY: number }>(
     { active: false, pointerId: null, lastX: 0, lastY: 0 },
   );
+  const [isDragging, setIsDragging] = useState(false);
+  const dragMovedRef = useRef(false);
 
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 200;
+
+  const extractNodeId = (node: SVGGElement): string | null => {
+    const id = (node.getAttribute('id') || node.id || '').trim();
+    if (!id) return null;
+
+    // Mermaid typically renders ids like:
+    // - flowchart-PROC-0
+    // - flowchart-CONS1-3
+    // In some cases there may be an additional prefix.
+    const known = id.match(/-(PROC|ORG|START|GOAL|OWNER|PRODUCT|END|CONS\d+)-/i);
+    if (known?.[1]) return known[1].toUpperCase();
+
+    const basic = id.match(/flowchart-([A-Za-z0-9_]+)-\d+$/i);
+    if (basic?.[1]) return basic[1].toUpperCase();
+
+    return null;
+  };
 
   const centerOnFirstNode = useMemo(() => {
     return (scale: number) => {
@@ -203,6 +225,36 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
     });
   };
 
+  const focusOnSvgElement = (el: SVGGElement | SVGGraphicsElement, nextScale?: number) => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const cw = Math.max(1, rect.width);
+    const ch = Math.max(1, rect.height);
+
+    let box: { x: number; y: number; width: number; height: number } | null = null;
+    try {
+      if (typeof (el as any).getBBox === 'function') {
+        box = (el as any).getBBox();
+      }
+    } catch {
+      box = null;
+    }
+    if (!box) return;
+
+    const targetCenterX = box.x + box.width / 2;
+    const targetCenterY = box.y + box.height / 2;
+
+    setTransform((t) => {
+      const desired = nextScale ?? Math.max(t.scale * 1.6, 2.5);
+      const scale = clamp(desired, MIN_SCALE, MAX_SCALE);
+      const x = cw / 2 - targetCenterX * scale;
+      const y = ch / 2 - targetCenterY * scale;
+      return { x, y, scale };
+    });
+  };
+
   const zoomBy = (delta: number) => {
     const el = containerRef.current;
     if (!el) return;
@@ -282,6 +334,8 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = containerRef.current;
     if (!el) return;
+    setIsDragging(true);
+    dragMovedRef.current = false;
     dragState.current = { active: true, pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
     hasUserTransformRef.current = true;
     el.setPointerCapture(e.pointerId);
@@ -296,6 +350,10 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
     dragState.current.lastX = e.clientX;
     dragState.current.lastY = e.clientY;
 
+    if (Math.abs(dx) + Math.abs(dy) > 2) {
+      dragMovedRef.current = true;
+    }
+
     setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
   };
 
@@ -306,10 +364,36 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
     if (dragState.current.pointerId !== e.pointerId) return;
     dragState.current.active = false;
     dragState.current.pointerId = null;
+    setIsDragging(false);
     try {
       el.releasePointerCapture(e.pointerId);
     } catch {
       // ignore
+    }
+  };
+
+  const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (dragMovedRef.current) {
+      // This click was part of a pan gesture.
+      dragMovedRef.current = false;
+      return;
+    }
+
+    const target = e.target as Element | null;
+    if (!target) return;
+
+    const node = target.closest('g.node') as SVGGElement | null;
+    if (!node) return;
+
+    const nodeId = extractNodeId(node);
+    if (nodeId && onNodeClick) {
+      onNodeClick(nodeId);
+    }
+
+    // Zoom on click (optional).
+    if (enableNodeClickZoom) {
+      hasUserTransformRef.current = true;
+      focusOnSvgElement(node);
     }
   };
 
@@ -410,7 +494,8 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        style={{ touchAction: 'none', cursor: dragState.current.active ? 'grabbing' : 'grab' }}
+        onClick={onClick}
+        style={{ touchAction: 'none', cursor: isDragging ? 'grabbing' : 'grab' }}
       >
         <div
           ref={contentRef}
@@ -418,6 +503,7 @@ export function MermaidDiagram({ code, className, ariaLabel }: MermaidDiagramPro
           style={{
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
             transformOrigin: '0 0',
+            transition: isDragging ? 'none' : 'transform 140ms ease-out',
           }}
           // Mermaid returns an SVG string.
           // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid renders trusted SVG generated from our own code string.

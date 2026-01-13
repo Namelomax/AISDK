@@ -17,6 +17,7 @@ import { Response } from '@/components/ai-elements/response';
 import remarkBreaks from 'remark-breaks';
 import { Button } from '@/components/ui/button';
 import { MermaidDiagram } from '@/components/document/MermaidDiagram';
+import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 
 const formatDocumentContent = (raw: string) => {
   if (!raw) return '';
@@ -30,6 +31,7 @@ type DocumentPanelProps = {
   onCopy?: (payload: { title: string; content: string }) => void;
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
+  diagramState?: ProcessDiagramState | null;
 };
 
 export type Attachment = {
@@ -43,6 +45,25 @@ export type DocumentState = {
   title: string;
   content: string;
   isStreaming: boolean;
+};
+
+export type ProcessDiagramState = {
+  organization?: { name?: string | null; activity?: string | null };
+  process?: { name?: string | null; description?: string | null };
+  owner?: { fullName?: string | null; position?: string | null };
+  goal?: string | null;
+  product?: string | null;
+  consumers?: Array<
+    | string
+    | {
+        kind?: 'person' | 'org' | 'group';
+        name?: string | null;
+        fullName?: string | null;
+        position?: string | null;
+      }
+  >;
+  boundaries?: { start?: string | null; end?: string | null };
+  updatedAt?: string;
 };
 
 type DocumentViewMode = 'document' | 'diagram';
@@ -60,11 +81,18 @@ function escapeHtml(input: string) {
     .replace(/>/g, '&gt;');
 }
 
+function escapeHtmlAttr(input: string) {
+  return escapeHtml(input)
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function escapeMermaidString(input: string) {
-  // Escapes for Mermaid quoted strings: ["..."]
+  // Mermaid label strings like ["..."] don't reliably support backslash-escaped quotes.
+  // Since we render HTML labels, encode quotes as HTML entities instead.
   return String(input || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
+    .replace(/\r\n?/g, '\n')
+    .replace(/"/g, '&quot;')
     .replace(/\n/g, ' ');
 }
 
@@ -126,6 +154,283 @@ function buildMermaidLabel(input: string, maxCharsPerLine: number) {
   const lines = wrapWords(withEmoji, maxCharsPerLine);
   const html = lines.map((l) => escapeHtml(l)).join('<br/>');
   return escapeMermaidString(html);
+}
+
+function buildMermaidHtmlLabel(
+  title: string,
+  value?: string | null,
+  options?: { maxCharsPerLine?: number; tooltip?: string | null },
+) {
+  const maxCharsPerLine = options?.maxCharsPerLine ?? 28;
+  const t = stripBasicMarkdown(title);
+  const v = stripBasicMarkdown(value || '');
+  const tooltip = (options?.tooltip ?? '').trim() || '';
+
+  const valueShort = v.length > 110 ? `${v.slice(0, 110)}…` : v;
+  const lines: string[] = [];
+  lines.push(...wrapWords(t, maxCharsPerLine));
+  if (valueShort) lines.push(...wrapWords(valueShort, maxCharsPerLine));
+
+  const inner = lines.map((l) => escapeHtml(l)).join('<br/>');
+  const html = tooltip
+    ? `<span title='${escapeHtmlAttr(tooltip)}'>${inner}</span>`
+    : inner;
+
+  return escapeMermaidString(html);
+}
+
+type MarkdownSections = Array<{ heading: string; level: number; content: string }>;
+
+function parseMarkdownSections(markdown: string): MarkdownSections {
+  const text = String(markdown || '').replace(/\r\n?/g, '\n');
+  const lines = text.split('\n');
+
+  const sections: MarkdownSections = [];
+  let inCodeFence = false;
+  let current: { heading: string; level: number; contentLines: string[] } | null = null;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    const content = current.contentLines
+      .join('\n')
+      .replace(/^\s+|\s+$/g, '')
+      .trim();
+    sections.push({ heading: current.heading, level: current.level, content });
+    current = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine ?? '';
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence) continue;
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (headingMatch) {
+      pushCurrent();
+      current = {
+        heading: headingMatch[2].trim(),
+        level: headingMatch[1].length,
+        contentLines: [],
+      };
+      continue;
+    }
+
+    if (current) current.contentLines.push(line);
+  }
+
+  pushCurrent();
+  return sections;
+}
+
+function pickSection(sections: MarkdownSections, keywords: string[]) {
+  const keys = keywords.map((k) => k.toLowerCase());
+  for (const s of sections) {
+    const h = (s.heading || '').toLowerCase();
+    if (keys.some((k) => h.includes(k))) return s;
+  }
+  return null;
+}
+
+function extractListLikeItems(text: string): string[] {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const items: string[] = [];
+  for (const line of lines) {
+    const m = line.match(/^\s*(?:[-*+]|\d+\.)\s+(.+?)\s*$/);
+    if (m?.[1]) items.push(m[1].trim());
+  }
+  if (items.length) return items;
+
+  // Fallback: split by semicolons/newlines, keep only meaningful chunks.
+  const raw = lines
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join(' ');
+
+  return raw
+    .split(/\s*(?:;|\n|\r)\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function buildSemanticMermaidDiagram(documentTitle: string, markdown: string): string {
+  const sections = parseMarkdownSections(markdown);
+  if (!sections.length) return '';
+
+  const org = pickSection(sections, ['организац', 'компан', 'о компании', 'о компании/организации']);
+  const goal = pickSection(sections, ['цель']);
+  const owner = pickSection(sections, ['владел', 'ответствен', 'owner']);
+  const product = pickSection(sections, ['продукт']);
+  const consumers = pickSection(sections, ['потребител', 'клиент', 'получател']);
+  const bounds = pickSection(sections, ['границ']);
+  const start = pickSection(sections, ['начало', 'старт', 'триггер']);
+  const end = pickSection(sections, ['конец', 'заверш', 'финиш']);
+
+  const processName = documentTitle || 'Процесс';
+
+  const hasAny = Boolean(org?.content || goal?.content || owner?.content || product?.content || consumers?.content || bounds?.content || start?.content || end?.content);
+  if (!hasAny) return '';
+
+  const lines: string[] = ['flowchart TD'];
+
+  // Core nodes
+  lines.push(`  PROC["${buildMermaidHtmlLabel('🧭 Процесс', processName, { maxCharsPerLine: 26, tooltip: processName })}"]`);
+
+  if (org) {
+    const first = extractListLikeItems(org.content)[0] || org.content;
+    lines.push(`  ORG["${buildMermaidHtmlLabel('🏢 Организация', first, { tooltip: org.content })}"]`);
+    lines.push('  ORG --> PROC');
+  }
+
+  const startText = start?.content || bounds?.content || '';
+  if (startText.trim()) {
+    const first = extractListLikeItems(startText)[0] || startText;
+    lines.push(`  START(["${buildMermaidHtmlLabel('🟢 Начало', first, { tooltip: startText })}"])`);
+    lines.push('  START --> PROC');
+  }
+
+  if (goal?.content?.trim()) {
+    const first = extractListLikeItems(goal.content)[0] || goal.content;
+    lines.push(`  GOAL["${buildMermaidHtmlLabel('🎯 Цель', first, { tooltip: goal.content })}"]`);
+    lines.push('  PROC --> GOAL');
+  }
+
+  if (owner?.content?.trim()) {
+    const first = extractListLikeItems(owner.content)[0] || owner.content;
+    // Circle/person-like node. Keep it compact; show full details in tooltip.
+    lines.push(`  OWNER(("${buildMermaidHtmlLabel('👤 Владелец', first, { maxCharsPerLine: 22, tooltip: owner.content })}"))`);
+    lines.push('  PROC --> OWNER');
+  }
+
+  if (product?.content?.trim()) {
+    const first = extractListLikeItems(product.content)[0] || product.content;
+    lines.push(`  PRODUCT["${buildMermaidHtmlLabel('📦 Продукт', first, { tooltip: product.content })}"]`);
+    lines.push('  PROC --> PRODUCT');
+  }
+
+  if (consumers?.content?.trim()) {
+    const items = extractListLikeItems(consumers.content);
+    const max = Math.min(6, items.length || 0);
+    if (max > 0) {
+      for (let i = 0; i < max; i++) {
+        const id = `CONS${i + 1}`;
+        const item = items[i];
+        lines.push(`  ${id}(("${buildMermaidHtmlLabel('👥 Потребитель', item, { maxCharsPerLine: 22, tooltip: item })}"))`);
+        lines.push(`  ${product?.content?.trim() ? 'PRODUCT' : 'PROC'} --> ${id}`);
+      }
+    } else {
+      const first = consumers.content;
+      lines.push(`  CONS1(("${buildMermaidHtmlLabel('👥 Потребитель', first, { maxCharsPerLine: 22, tooltip: consumers.content })}"))`);
+      lines.push(`  ${product?.content?.trim() ? 'PRODUCT' : 'PROC'} --> CONS1`);
+    }
+  }
+
+  const endText = end?.content || '';
+  if (endText.trim()) {
+    const first = extractListLikeItems(endText)[0] || endText;
+    lines.push(`  END(["${buildMermaidHtmlLabel('🏁 Конец', first, { tooltip: endText })}"])`);
+    lines.push('  PROC --> END');
+  }
+
+  // If there is a boundaries section and we didn't use it as START, show it as an extra context node.
+  if (bounds?.content?.trim() && !start?.content?.trim()) {
+    const first = extractListLikeItems(bounds.content)[0] || bounds.content;
+    lines.push(`  BOUNDS["${buildMermaidHtmlLabel('📍 Границы процесса', first, { tooltip: bounds.content })}"]`);
+    lines.push('  PROC --> BOUNDS');
+  }
+
+  return lines.join('\n');
+}
+
+function buildSemanticMermaidFromState(documentTitle: string, state: ProcessDiagramState | null | undefined): string {
+  const s = state || null;
+  if (!s) return '';
+
+  const orgName = (s.organization?.name || '').trim();
+  const orgActivity = (s.organization?.activity || '').trim();
+  const ownerName = (s.owner?.fullName || '').trim();
+  const ownerPos = (s.owner?.position || '').trim();
+  const goal = (s.goal || '').trim();
+  const product = (s.product || '').trim();
+  const procName = (s.process?.name || '').trim();
+  const procDesc = (s.process?.description || '').trim();
+  const start = (s.boundaries?.start || '').trim();
+  const end = (s.boundaries?.end || '').trim();
+  const consumers = Array.isArray(s.consumers) ? s.consumers : [];
+
+  // Only use state-based diagram if we actually extracted something meaningful.
+  const hasAny = Boolean(orgName || orgActivity || ownerName || ownerPos || goal || product || procName || procDesc || start || end || consumers.length);
+  if (!hasAny) return '';
+
+  const lines: string[] = ['flowchart TD'];
+  const effectiveProcessName = procName || documentTitle || 'Процесс';
+  const processTooltip = [effectiveProcessName, procDesc].filter(Boolean).join('\n');
+  lines.push(`  PROC["${buildMermaidHtmlLabel('🧭 Процесс', effectiveProcessName, { tooltip: processTooltip })}"]`);
+
+  if (orgName || orgActivity) {
+    // Requirements: organization name should look like plain text (no rectangle).
+    const shown = orgName || 'Организация';
+    const tooltip = [orgName, orgActivity].filter(Boolean).join('\n');
+    lines.push(`  ORG["${buildMermaidHtmlLabel('', shown, { tooltip })}"]`);
+    lines.push('  ORG --> PROC');
+  }
+
+  if (start) {
+    lines.push(`  START(["${buildMermaidHtmlLabel('🟢 Начало', start, { tooltip: start })}"])`);
+    lines.push('  START --> PROC');
+  }
+
+  if (goal) {
+    // Requirements: goal should look like plain text (no rectangle) + details on click.
+    const short = goal.length > 180 ? `${goal.slice(0, 180)}…` : goal;
+    lines.push(`  GOAL["${buildMermaidHtmlLabel('', `🎯 Цель: ${short}`, { tooltip: goal })}"]`);
+    lines.push('  PROC --> GOAL');
+  }
+
+  if (ownerName || ownerPos) {
+    const shown = ownerName || ownerPos;
+    const tooltip = [ownerName, ownerPos].filter(Boolean).join('\n');
+    lines.push(`  OWNER(("${buildMermaidHtmlLabel('👤 Владелец', shown || 'Владелец', { maxCharsPerLine: 22, tooltip })}"))`);
+    lines.push('  PROC --> OWNER');
+  }
+
+  if (product) {
+    lines.push(`  PRODUCT["${buildMermaidHtmlLabel('📦 Продукт', product, { tooltip: product })}"]`);
+    lines.push('  PROC --> PRODUCT');
+  }
+
+  if (consumers.length) {
+    const max = Math.min(6, consumers.length);
+    for (let i = 0; i < max; i++) {
+      const c = consumers[i] || ({} as any);
+      const label =
+        typeof c === 'string'
+          ? String(c).trim()
+          : (String((c as any).fullName || (c as any).name || '').trim() || 'Потребитель');
+      const extra = typeof c === 'string' ? '' : String((c as any).position || '').trim();
+      const tooltip = [label, extra].filter(Boolean).join('\n');
+      const id = `CONS${i + 1}`;
+      lines.push(`  ${id}(("${buildMermaidHtmlLabel('👥 Потребитель', label, { maxCharsPerLine: 22, tooltip })}"))`);
+      lines.push(`  ${product ? 'PRODUCT' : 'PROC'} --> ${id}`);
+    }
+  }
+
+  if (end) {
+    lines.push(`  END(["${buildMermaidHtmlLabel('🏁 Конец', end, { tooltip: end })}"])`);
+    lines.push('  PROC --> END');
+  }
+
+  // Text-only styling for specific nodes.
+  lines.push('');
+  lines.push('  classDef textOnly fill:none,stroke:none;');
+  lines.push('  class ORG,GOAL textOnly;');
+
+  return lines.join('\n');
 }
 
 function parseMarkdownToOutline(markdown: string): OutlineNode[] {
@@ -196,7 +501,7 @@ function outlineToMermaidFlowchart(title: string, outline: OutlineNode[]): strin
   })();
 
   const rootId = makeId();
-  lines.push(`  ${rootId}[\"${buildMermaidLabel(safeTitle, 34)}\"]`);
+  lines.push(`  ${rootId}["${buildMermaidLabel(safeTitle, 34)}"]`);
 
   const emit = (parentId: string, nodes: OutlineNode[]) => {
     for (const node of nodes) {
@@ -298,11 +603,12 @@ function extractTitleFromMarkdown(markdown?: string | null): string | null {
   return null;
 }
 
-export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: DocumentPanelProps) => {
+export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramState }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
   const [viewMode, setViewMode] = useState<DocumentViewMode>('document');
+  const [selectedDiagramNodeId, setSelectedDiagramNodeId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
@@ -448,10 +754,70 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
 
   const diagramSource = editing ? draftContent : viewContent;
   const mermaidCode = useMemo(() => {
+
+      const diagramDetails = useMemo(() => {
+        const id = (selectedDiagramNodeId || '').toUpperCase();
+        if (!id) return null;
+
+        const s = diagramState || null;
+        const getConsumersArray = () => (Array.isArray(s?.consumers) ? s!.consumers! : []);
+
+        const build = (title: string, body: string) => {
+          const cleaned = String(body || '').trim();
+          return cleaned ? { title, body: cleaned } : null;
+        };
+
+        if (id === 'PROC') {
+          const name = String(s?.process?.name || document.title || '').trim();
+          const desc = String(s?.process?.description || '').trim();
+          return build('Процесс', [name, desc].filter(Boolean).join('\n\n'));
+        }
+        if (id === 'ORG') {
+          const name = String(s?.organization?.name || '').trim();
+          const activity = String(s?.organization?.activity || '').trim();
+          return build('Организация', [name, activity].filter(Boolean).join('\n\n'));
+        }
+        if (id === 'GOAL') {
+          return build('Цель', String(s?.goal || '').trim());
+        }
+        if (id === 'OWNER') {
+          const fullName = String(s?.owner?.fullName || '').trim();
+          const position = String(s?.owner?.position || '').trim();
+          return build('Владелец', [fullName, position].filter(Boolean).join('\n'));
+        }
+        if (id === 'PRODUCT') {
+          return build('Продукт', String(s?.product || '').trim());
+        }
+        if (id === 'START') {
+          return build('Начало', String(s?.boundaries?.start || '').trim());
+        }
+        if (id === 'END') {
+          return build('Конец', String(s?.boundaries?.end || '').trim());
+        }
+        const m = id.match(/^CONS(\d+)$/i);
+        if (m?.[1]) {
+          const idx = Math.max(0, Number(m[1]) - 1);
+          const c = getConsumersArray()[idx] as any;
+          const label =
+            typeof c === 'string'
+              ? String(c).trim()
+              : String(c?.fullName || c?.name || '').trim();
+          const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
+          return build('Потребитель', [label, extra].filter(Boolean).join('\n'));
+        }
+
+        return null;
+      }, [diagramState, document.title, selectedDiagramNodeId]);
+    const stateDiagram = buildSemanticMermaidFromState(displayTitle, diagramState || null);
+    if (stateDiagram) return stateDiagram;
+
+    const semantic = buildSemanticMermaidDiagram(displayTitle, diagramSource);
+    if (semantic) return semantic;
+
     const outline = parseMarkdownToOutline(diagramSource);
     if (!outline.length) return '';
     return outlineToMermaidFlowchart(displayTitle, outline);
-  }, [diagramSource, displayTitle]);
+  }, [diagramSource, displayTitle, diagramState]);
 
   const formattedContent = formatDocumentContent(viewContent);
 
@@ -599,7 +965,34 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                 className="w-full h-[60vh]"
                 code={mermaidCode}
                 ariaLabel="Схема документа"
+                enableNodeClickZoom={false}
+                onNodeClick={(nodeId) => {
+                  setSelectedDiagramNodeId((prev) => (prev?.toUpperCase() === nodeId.toUpperCase() ? null : nodeId));
+                }}
               />
+
+              <Collapsible open={Boolean(diagramDetails)}>
+                <CollapsibleContent>
+                  {diagramDetails ? (
+                    <div className="mt-3 rounded-md border bg-background p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-sm font-semibold">{diagramDetails.title}</div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setSelectedDiagramNodeId(null)}
+                        >
+                          Скрыть
+                        </Button>
+                      </div>
+                      <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">
+                        {diagramDetails.body}
+                      </div>
+                    </div>
+                  ) : null}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
             <div className={viewMode === 'document' ? '' : 'hidden'}>
               <Response

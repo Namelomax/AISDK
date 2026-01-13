@@ -2,7 +2,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { DocumentPanel, DocumentState } from '@/components/document/DocumentPanel';
+import { DocumentPanel, DocumentState, type ProcessDiagramState } from '@/components/document/DocumentPanel';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
 import { PromptsManager } from './api/promts/PromtsManager';
 import { Header } from '@/components/chat/Header';
@@ -32,6 +32,8 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
+  const [diagramState, setDiagramState] = useState<ProcessDiagramState | null>(null);
+  const lastDiagramUserMessageIdRef = useRef<string | null>(null);
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
 
@@ -232,18 +234,23 @@ export default function ChatPage() {
     },
     onData: (dataPart) => {
       // console.log('📥 Received data:', dataPart);
+
+      // Server may send custom document events either directly (legacy)
+      // or wrapped as an AI SDK `data` part: { type: 'data', data: { type: 'data-title', data: ... } }.
+      const raw: any = dataPart as any;
+      const normalized: any = raw?.type === 'data' && raw?.data && typeof raw.data.type === 'string' ? raw.data : raw;
       
       // Обработка событий документа
-      if (dataPart.type === 'data-title') {
-        console.log('📄 Document title:', dataPart.data);
+      if (normalized.type === 'data-title') {
+        console.log('📄 Document title:', normalized.data);
         setDocument((prev) => ({
           ...prev,
-          title: String(dataPart.data),
+          title: String(normalized.data),
           isStreaming: true,
         }));
       }
 
-      if (dataPart.type === 'data-clear') {
+      if (normalized.type === 'data-clear') {
         console.log('🧹 Clearing document');
         setDocument((prev) => ({
           ...prev,
@@ -252,15 +259,15 @@ export default function ChatPage() {
         }));
       }
 
-      if (dataPart.type === 'data-documentDelta') {
+      if (normalized.type === 'data-documentDelta') {
         setDocument((prev) => ({
           ...prev,
-          content: prev.content + dataPart.data,
+          content: prev.content + normalized.data,
         }));
       }
 
-      if (dataPart.type === 'data-documentPatch') {
-        const patch = dataPart.data as DocumentPatch;
+      if (normalized.type === 'data-documentPatch') {
+        const patch = normalized.data as DocumentPatch;
         setDocument((prev) => ({
           ...prev,
           // Apply patch without clearing the document
@@ -269,7 +276,7 @@ export default function ChatPage() {
         }));
       }
 
-      if (dataPart.type === 'data-finish') {
+      if (normalized.type === 'data-finish') {
         console.log('✅ Document finished');
         setDocument((prev) => ({
           ...prev,
@@ -278,6 +285,81 @@ export default function ChatPage() {
       }
     },
   });
+
+  // Load diagram state per conversation.
+  useEffect(() => {
+    if (!conversationId) {
+      setDiagramState(null);
+      lastDiagramUserMessageIdRef.current = null;
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(`diagramState:${conversationId}`);
+      if (raw) setDiagramState(JSON.parse(raw));
+      else setDiagramState(null);
+    } catch {
+      setDiagramState(null);
+    }
+    lastDiagramUserMessageIdRef.current = null;
+  }, [conversationId]);
+
+  // Persist diagram state.
+  useEffect(() => {
+    if (!conversationId) return;
+    try {
+      if (!diagramState) localStorage.removeItem(`diagramState:${conversationId}`);
+      else localStorage.setItem(`diagramState:${conversationId}`, JSON.stringify(diagramState));
+    } catch {
+      // ignore
+    }
+  }, [diagramState, conversationId]);
+
+  // Update diagram state after each new user message.
+  useEffect(() => {
+    if (!conversationId) return;
+    if (!Array.isArray(messages) || messages.length === 0) return;
+
+    const lastUser = [...messages].reverse().find((m: any) => m?.role === 'user');
+    if (!lastUser) return;
+    const lastUserId = String(lastUser.id || '');
+    if (!lastUserId) return;
+    if (lastDiagramUserMessageIdRef.current === lastUserId) return;
+
+    const userText = (() => {
+      if (Array.isArray((lastUser as any).parts)) {
+        const p = (lastUser as any).parts.find((x: any) => x?.type === 'text' && typeof x.text === 'string');
+        if (p?.text) return String(p.text);
+      }
+      if (typeof (lastUser as any)?.text === 'string') return String((lastUser as any).text);
+      return '';
+    })();
+    if (!String(userText || '').trim()) return;
+
+    lastDiagramUserMessageIdRef.current = lastUserId;
+
+    const slice = (messages || []).slice(-16).map((m: any) => ({
+      id: m?.id,
+      role: m?.role,
+      content: Array.isArray(m?.parts)
+        ? (m.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text || '')
+        : (typeof m?.text === 'string' ? m.text : ''),
+      parts: Array.isArray(m?.parts) ? m.parts : undefined,
+    }));
+
+    (async () => {
+      try {
+        const resp = await fetch('/api/diagram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: slice, state: diagramState }),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (j?.success && j?.state) setDiagramState(j.state);
+      } catch (e) {
+        console.warn('Failed to update diagram state', e);
+      }
+    })();
+  }, [messages, conversationId, diagramState]);
 
   const attachedFiles = useMemo(() => {
     const collected: Array<{ id?: string; name?: string; url?: string; mediaType?: string }> = [];
@@ -779,7 +861,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={document} onEdit={handleDocumentEdit} attachments={attachedFiles} />
+        <DocumentPanel document={document} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} />
       </div>
     </div>
   );

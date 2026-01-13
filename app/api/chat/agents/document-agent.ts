@@ -150,6 +150,13 @@ async function generateFinalDocument(
   existingDocument?: string,
   temperature: number = 0.1,
 ): Promise<string> {
+  // AI SDK v5 data stream expects `type: 'data'`.
+  // We wrap our existing custom events (data-title, data-documentDelta, etc.)
+  // so the client can handle them reliably without breaking the stream.
+  const writeData = (payload: any) => {
+    dataStream.write({ type: 'data', data: payload });
+  };
+
   const lastUserTextRaw = (() => {
     const lastUser = [...(messages || [])].reverse().find((m) => m?.role === 'user');
     return stripEmbeddedAttachments(extractMessageText(lastUser));
@@ -227,7 +234,7 @@ async function generateFinalDocument(
   if (hasExisting && isEditRequest(effectiveEditText)) {
     const currentTitle = extractDocumentTitle(existingDocument || '');
     if (currentTitle) {
-      dataStream.write({ type: 'data-title', data: currentTitle });
+      writeData({ type: 'data-title', data: currentTitle });
     }
 
     const progressId = `doc-edit-${crypto.randomUUID()}`;
@@ -319,7 +326,7 @@ ${effectiveEditText}
           continue;
         }
         const patch: DocumentPatch = { heading, mode: 'rename', content: '', newHeading };
-        dataStream.write({ type: 'data-documentPatch', data: patch });
+        writeData({ type: 'data-documentPatch', data: patch });
         finalPatches.push(patch);
         workingDocument = applyDocumentPatches(workingDocument, [patch]);
         continue;
@@ -327,7 +334,7 @@ ${effectiveEditText}
 
       if (mode === 'delete') {
         const patch: DocumentPatch = { heading, mode: 'delete', content: '' };
-        dataStream.write({ type: 'data-documentPatch', data: patch });
+        writeData({ type: 'data-documentPatch', data: patch });
         finalPatches.push(patch);
         workingDocument = applyDocumentPatches(workingDocument, [patch]);
         continue;
@@ -390,8 +397,8 @@ ${effectiveEditText}
             : stripLeadingMarkdownHeading(acc);
 
         dataStream.write({
-          type: 'data-documentPatch',
-          data: { heading, mode: 'replace', content: streamedBody } satisfies DocumentPatch,
+          type: 'data',
+          data: { type: 'data-documentPatch', data: { heading, mode: 'replace', content: streamedBody } satisfies DocumentPatch },
         });
       }
 
@@ -404,7 +411,7 @@ ${effectiveEditText}
     let updated = workingDocument;
     if (!updated.trim()) updated = existingDocument || '';
 
-    dataStream.write({ type: 'data-finish', data: null });
+    writeData({ type: 'data-finish', data: null });
     dataStream.write({
       type: 'text-delta',
       id: progressId,
@@ -482,9 +489,9 @@ ${existingDocument}
     ],
   });
 
-  dataStream.write({ type: 'data-clear', data: null });
+  writeData({ type: 'data-clear', data: null });
   const placeholderTitle = 'Генерация документа…';
-  dataStream.write({ type: 'data-title', data: placeholderTitle });
+  writeData({ type: 'data-title', data: placeholderTitle });
   const progressId = `regulation-${crypto.randomUUID()}`;
   dataStream.write({ type: 'text-start', id: progressId });
   dataStream.write({
@@ -529,7 +536,7 @@ ${existingDocument}
 
         if (titleMatch) {
           finalTitle = titleMatch[1].trim() || finalTitle;
-          dataStream.write({ type: 'data-title', data: finalTitle });
+          writeData({ type: 'data-title', data: finalTitle });
           publishedFinalTitle = true;
           chunk = headingBuffer; 
         } else {
@@ -545,20 +552,20 @@ ${existingDocument}
     }
 
     fullContent += chunk;
-    dataStream.write({ type: 'data-documentDelta', data: chunk });
+    writeData({ type: 'data-documentDelta', data: chunk });
     hasEmittedContent = true;
   }
 
   if (!publishedFinalTitle) {
-    dataStream.write({ type: 'data-title', data: finalTitle });
+    writeData({ type: 'data-title', data: finalTitle });
   }
 
   if (!hasEmittedContent) {
     const fallbackSource = conversationContext.trim() || '*Информация не предоставлена в диалоге.*';
-    dataStream.write({ type: 'data-documentDelta', data: fallbackSource });
+    writeData({ type: 'data-documentDelta', data: fallbackSource });
   }
 
-  dataStream.write({ type: 'data-finish', data: null });
+  writeData({ type: 'data-finish', data: null });
   dataStream.write({
     type: 'text-delta',
     id: progressId,
