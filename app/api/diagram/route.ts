@@ -1,6 +1,7 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { generateObject } from 'ai';
 import { z } from 'zod';
+import type { ProcessDiagramState } from '@/lib/document/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -16,25 +17,6 @@ const openrouter = createOpenRouter({
 });
 
 const model = openrouter.chat('xiaomi/mimo-v2-flash:free');
-
-type ProcessDiagramState = {
-  organization?: { name?: string | null; activity?: string | null };
-  process?: { name?: string | null; description?: string | null };
-  owner?: { fullName?: string | null; position?: string | null };
-  goal?: string | null;
-  product?: string | null;
-  consumers?: Array<
-    | string
-    | {
-        kind?: 'person' | 'org' | 'group';
-        name?: string | null;
-        fullName?: string | null;
-        position?: string | null;
-      }
-  >;
-  boundaries?: { start?: string | null; end?: string | null };
-  updatedAt?: string;
-};
 
 function toText(msg: any): string {
   if (!msg) return '';
@@ -207,6 +189,13 @@ function mergeState(prev: ProcessDiagramState | null, patch: Partial<ProcessDiag
     next.consumers = deduped;
   }
 
+  if (patch.graph && (Array.isArray(patch.graph.nodes) || Array.isArray(patch.graph.edges))) {
+    next.graph = {
+      nodes: Array.isArray(patch.graph.nodes) ? patch.graph.nodes : base.graph?.nodes,
+      edges: Array.isArray(patch.graph.edges) ? patch.graph.edges : base.graph?.edges,
+    };
+  }
+
   next.updatedAt = new Date().toISOString();
   return next;
 }
@@ -254,8 +243,60 @@ const PatchSchema = z
         end: z.string().nullable().optional(),
       })
       .optional(),
+    graph: z
+      .object({
+        nodes: z
+          .array(
+            z.object({
+              id: z.string().nullable().optional(),
+              label: z.string().min(1),
+              type: z.string().nullable().optional(),
+              details: z.string().nullable().optional(),
+            })
+          )
+          .optional(),
+        edges: z
+          .array(
+            z.object({
+              from: z.string().min(1),
+              to: z.string().min(1),
+              label: z.string().nullable().optional(),
+            })
+          )
+          .optional(),
+      })
+      .optional(),
   })
   .passthrough();
+
+function normalizeNodeType(raw?: string | null) {
+  const t = String(raw ?? '').trim().toLowerCase();
+  if (!t) return undefined;
+  if (['start', 'process', 'decision', 'end', 'actor', 'doc', 'note'].includes(t)) return t as any;
+  if (t.includes('событие') || t.includes('старт')) return 'start';
+  if (t.includes('конец') || t.includes('финиш') || t.includes('заверш')) return 'end';
+  if (t.includes('решени') || t.includes('ветв') || t.includes('услов')) return 'decision';
+  if (t.includes('акт') || t.includes('исполн') || t.includes('роль') || t.includes('участ')) return 'actor';
+  if (t.includes('док')) return 'doc';
+  if (t.includes('замет') || t.includes('примеч')) return 'note';
+  if (t.includes('шаг') || t.includes('процесс') || t.includes('действ')) return 'process';
+  return 'process';
+}
+
+function normalizeGraph(patch: Partial<ProcessDiagramState>): Partial<ProcessDiagramState> {
+  if (!patch.graph?.nodes) return patch;
+  const nodes = patch.graph.nodes.map((n) => ({
+    ...n,
+    type: normalizeNodeType(n.type),
+  }));
+  return {
+    ...patch,
+    graph: {
+      nodes,
+      edges: patch.graph.edges,
+    },
+  } as Partial<ProcessDiagramState>;
+}
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
@@ -281,7 +322,7 @@ export async function POST(req: Request) {
   const heuristic = heuristicPatchFromText(lastUserText);
 
   try {
-    const { object: patch } = await generateObject({
+    const { object: rawPatch } = await generateObject({
       model,
       temperature: 0.1,
       schema: PatchSchema,
@@ -293,6 +334,9 @@ export async function POST(req: Request) {
 
 НУЖНО:
 - Извлечь только факты о процессе (организация, владелец, цель, продукт, потребители, границы)
+- ПО ВОЗМОЖНОСТИ сформировать схему процесса в виде графа (nodes/edges) по содержанию диалога
+- Делай дополнения «рядом» с шагом: добавляй details к существующему узлу, а не новые узлы
+- Если что-то поменялось — корректируй существующие узлы (label/details/edges), можно пересобрать граф целиком
 - Вернуть ТОЛЬКО JSON-патч, который ДОПОЛНЯЕТ состояние (не стирай поля без причины)
 - Если в последнем сообщении нет новых фактов — верни пустой объект {}
 
@@ -319,15 +363,20 @@ ${msgs
 - product: итоговый продукт/результат (одной строкой)
 - consumers: список потребителей результата (персона/организация/группа)
 - boundaries.start/end: старт/финиш (дата или событие/триггер)
+ - graph.nodes: список узлов схемы (label + type + details), используй понятные шаги/акторы/документы
+ - graph.edges: связи между узлами (from -> to), используй id узлов
 
 ВАЖНО:
 - Верни строго JSON (без markdown)
 - Используй эвристику как подсказку, но можешь уточнять/исправлять
 - Если нашёл новые факты — верни их. Если фактов нет — {}
+ - Если создаёшь graph, задай уникальные id (например, N1, N2, N3)
+ - Старайся держать граф компактным: 5–10 ключевых узлов, остальное в details
 
 Верни только валидный JSON.`,
     });
 
+    const patch = normalizeGraph(rawPatch as Partial<ProcessDiagramState>);
     // Merge: heuristic baseline first, then model patch (model can override).
     const merged = mergeState(mergeState(prevState, heuristic), patch);
     return new Response(JSON.stringify({ success: true, state: merged }), {

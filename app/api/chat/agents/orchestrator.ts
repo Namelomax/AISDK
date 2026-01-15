@@ -35,6 +35,24 @@ function stripEmbeddedAttachments(text: string): string {
     .trim();
 }
 
+function uiMessageText(msg: any): string {
+  if (!msg) return '';
+  if (Array.isArray(msg?.parts)) {
+    const t = msg.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text;
+    if (t) return String(t);
+  }
+  if (typeof msg?.content === 'string') return msg.content;
+  if (typeof msg?.text === 'string') return msg.text;
+  return '';
+}
+
+function uiMessageHasAttachments(msg: any): boolean {
+  if (!msg) return false;
+  if (Array.isArray(msg?.parts) && msg.parts.some((p: any) => p?.type === 'file')) return true;
+  if (Array.isArray(msg?.metadata?.attachments) && msg.metadata.attachments.length > 0) return true;
+  return false;
+}
+
 function looksLikeAttachmentReadRequest(text: string): boolean {
   const t = (text || '').toLowerCase();
   if (!t) return false;
@@ -174,8 +192,19 @@ export function decideNextAction(context: AgentContext, intent: IntentType): Orc
   const hasExisting = Boolean(context?.documentContent && context.documentContent.trim().length > 0);
 
   const msgs = context?.messages || [];
+  const uiMsgs = Array.isArray((context as any)?.uiMessages) ? (context as any).uiMessages : [];
+
+  const lastUiUser = Array.isArray(uiMsgs)
+    ? [...uiMsgs].reverse().find((m: any) => m?.role === 'user')
+    : null;
+
   const lastUser = [...msgs].reverse().find((m: any) => m?.role === 'user');
-  const lastUserText = stripEmbeddedAttachments(extractMessageText(lastUser));
+
+  const lastUserText = stripEmbeddedAttachments(
+    lastUiUser ? uiMessageText(lastUiUser) : extractMessageText(lastUser)
+  );
+
+  const uploadOnly = Boolean(lastUiUser && uiMessageHasAttachments(lastUiUser) && !lastUserText.trim());
   const lastAssistant = (() => {
     const idx = msgs.length - 1;
     // Find the most recent assistant message before the last user message.
@@ -192,6 +221,10 @@ export function decideNextAction(context: AgentContext, intent: IntentType): Orc
     return null;
   })();
   const lastAssistantText = stripEmbeddedAttachments(extractMessageText(lastAssistant));
+
+  if (uploadOnly) {
+    return { route: 'chat', reason: 'Upload-only: do not generate document on file upload.' };
+  }
 
   const explicitEdit = looksLikeDocumentEdit(lastUserText, lastAssistantText);
   const explicitGeneration = looksLikeDocumentGenerationRequest(lastUserText);

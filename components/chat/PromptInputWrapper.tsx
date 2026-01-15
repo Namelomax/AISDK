@@ -112,6 +112,8 @@ type PromptInputWrapperProps = {
   className?: string;
   selectedPromptId?: string | null;
   documentContent?: string;
+  prepareSend?: () => Promise<string | null> | string | null;
+  onUserMessageQueued?: (message: any) => void;
 };
 
 export const PromptInputWrapper = ({
@@ -128,6 +130,8 @@ export const PromptInputWrapper = ({
   className,
   selectedPromptId,
   documentContent,
+  prepareSend,
+  onUserMessageQueued,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -179,9 +183,37 @@ export const PromptInputWrapper = ({
       // Keep isTextExtractable import as a hint for future gating / UI, but don't await extraction here.
       void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
+      const baseConversationId = prepareSend ? await prepareSend() : conversationId;
+      if (baseConversationId === null) return;
+
+      const clientMessageId =
+        (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
+          ? (crypto as any).randomUUID()
+          : String(Date.now());
+
+      if (onUserMessageQueued) {
+        const parts: any[] = [];
+        if (trimmedText) parts.push({ type: 'text', text: trimmedText });
+        for (const f of preparedFiles) {
+          parts.push({
+            type: 'file',
+            id: (f as any)?.id,
+            filename: (f as any)?.filename,
+            url: (f as any)?.url,
+            mediaType: (f as any)?.mediaType,
+          });
+        }
+        onUserMessageQueued({
+          id: clientMessageId,
+          role: 'user',
+          parts,
+          metadata: {},
+        });
+      }
+
       const ensuredConversationId = await ensureConversationCreated(
         authUser,
-        conversationId,
+        baseConversationId,
         setConversationsList,
         setConversationId,
         abort.signal
@@ -191,6 +223,7 @@ export const PromptInputWrapper = ({
 
       sendMessage(
         {
+          id: clientMessageId,
           text: trimmedText,
           files: preparedFiles,
         } as any,

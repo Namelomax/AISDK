@@ -19,39 +19,9 @@ import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 import { LocalFlowDiagram } from '@/components/document/LocalFlowDiagram';
-
-export type DocumentState = {
-  title: string;
-  content: string;
-  isStreaming: boolean;
-};
-
-export type ProcessDiagramState = {
-  organization?: { name?: string | null; activity?: string | null };
-  process?: { name?: string | null; description?: string | null };
-  owner?: { fullName?: string | null; position?: string | null };
-  goal?: string | null;
-  product?: string | null;
-  consumers?: Array<
-    | string
-    | {
-        kind?: 'person' | 'org' | 'group';
-        name?: string | null;
-        fullName?: string | null;
-        position?: string | null;
-      }
-  >;
-  boundaries?: { start?: string | null; end?: string | null };
-  updatedAt?: string;
-};
-
-export type Attachment = {
-  id?: string;
-  name?: string;
-  url?: string;
-  mediaType?: string;
-  bytes?: number;
-};
+import type { Attachment, DocumentState, ProcessDiagramState } from '@/lib/document/types';
+import { extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
+import { buildDrawioXmlFromState } from '@/lib/document/drawio';
 
 type DocumentViewMode = 'document' | 'diagram';
 
@@ -62,36 +32,6 @@ type DocumentPanelProps = {
   attachments?: Attachment[];
   diagramState?: ProcessDiagramState | null;
 };
-
-function formatDocumentContent(raw: string) {
-  if (!raw) return '';
-  const normalized = raw.replace(/\r\n?/g, '\n');
-  // Preserve manual indentation by converting leading spaces on each line to non-breaking spaces
-  return normalized.replace(/^(\s+)/gm, (m) => m.replace(/ /g, '\u00A0'));
-}
-
-function extractTitleFromMarkdown(markdown?: string | null): string | null {
-  const text = String(markdown || '').replace(/\r\n?/g, '\n');
-  if (!text.trim()) return null;
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) continue;
-    const m = t.match(/^#\s+(.+?)\s*$/);
-    if (m?.[1]) return m[1].trim();
-    break;
-  }
-  return null;
-}
-
-function sanitizeFilename(input: string, fallback: string) {
-  const trimmed = String(input || '').trim();
-  const safe = (trimmed || fallback)
-    .replace(/[<>:"/\\|?*]/g, '')
-    .replace(/\s+/g, '_')
-    .slice(0, 140);
-  return safe || fallback;
-}
 
 function getFileExt(name: string) {
   const n = String(name || '').trim();
@@ -158,202 +98,6 @@ function isImageAttachment(att: Attachment) {
   );
 }
 
-function escapeXml(input: string) {
-  return String(input || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function wrapForDrawioLabel(input: string) {
-  const t = String(input || '').trim();
-  if (!t) return '';
-  // mxGraph labels accept HTML when html=1, but draw.io files are XML.
-  // That means the label must be XML-escaped: `<br/>` must become `&lt;br/&gt;`.
-  // We first inject `<br/>` (for draw.io's HTML labels), then escape as XML.
-  return escapeXml(t.replace(/\r\n?|\n/g, '<br/>'));
-}
-
-function buildDrawioXmlFromState(documentTitle: string, state: ProcessDiagramState | null | undefined): string {
-  const s = state || null;
-  if (!s) return '';
-
-  const short = (input: any, max = 72) => {
-    const t = String(input ?? '').replace(/\s+/g, ' ').trim();
-    if (!t) return '';
-    if (t.length <= max) return t;
-    return `${t.slice(0, Math.max(0, max - 1))}…`;
-  };
-
-  const orgName = String(s.organization?.name || '').trim();
-  const orgActivity = String(s.organization?.activity || '').trim();
-  const procName = String(s.process?.name || '').trim();
-  const procDesc = String(s.process?.description || '').trim();
-  const ownerName = String(s.owner?.fullName || '').trim();
-  const ownerPos = String(s.owner?.position || '').trim();
-  const goal = String(s.goal || '').trim();
-  const product = String(s.product || '').trim();
-  const start = String(s.boundaries?.start || '').trim();
-  const end = String(s.boundaries?.end || '').trim();
-  const consumers = Array.isArray(s.consumers) ? s.consumers : [];
-
-  const hasAny = Boolean(
-    orgName ||
-      orgActivity ||
-      procName ||
-      procDesc ||
-      ownerName ||
-      ownerPos ||
-      goal ||
-      product ||
-      start ||
-      end ||
-      consumers.length
-  );
-  if (!hasAny) return '';
-
-  const processTitle = procName || documentTitle || 'Процесс';
-
-  // Layout resembles a "project/process scheme":
-  // - Context (org / owner / goal) grouped, not necessarily connected.
-  // - Process flow (start -> process -> product -> end).
-  // - Consumers grouped separately.
-  const canvasW = 1200;
-  const canvasH = 800;
-
-  const node = (
-    id: string,
-    value: string,
-    style: string,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    parentId: string = '1'
-  ) => {
-    const v = wrapForDrawioLabel(value);
-    return `    <mxCell id="${escapeXml(id)}" value="${v}" style="${escapeXml(style)}" vertex="1" parent="${escapeXml(parentId)}">\n      <mxGeometry x="${x}" y="${y}" width="${w}" height="${h}" as="geometry"/>\n    </mxCell>`;
-  };
-
-  const edge = (id: string, source: string, target: string, style: string) => {
-    return `    <mxCell id="${escapeXml(id)}" style="${escapeXml(style)}" edge="1" parent="1" source="${escapeXml(source)}" target="${escapeXml(target)}">\n      <mxGeometry relative="1" as="geometry"/>\n    </mxCell>`;
-  };
-
-  const styles = {
-    group: 'group=1;rounded=0;whiteSpace=wrap;html=1;fillColor=none;align=left;verticalAlign=top;spacing=10;',
-    process: 'rounded=0;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
-    terminator: 'shape=terminator;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
-    ellipse: 'ellipse;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;spacing=8;',
-    // Text blocks without outlines.
-    textOnlyLeft: 'text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;',
-    // Small clickable tag-like blocks.
-    tag: 'rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacing=8;',
-    // Owner label: icon + text, no oval.
-    ownerLabel: 'text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;spacingLeft=28;ownerIcon=1;',
-    edge: 'endArrow=block;endFill=1;html=1;rounded=0;',
-  };
-
-  const cells: string[] = [];
-  const edges: string[] = [];
-
-  // Group containers (outline only)
-  // Note: groups are vertices too; local renderer draws them as transparent outlines.
-  const context = { id: 'GROUP_CONTEXT', x: 40, y: 20, w: 760, h: 140 };
-  const flow = { id: 'GROUP_FLOW', x: 40, y: 180, w: 760, h: 560 };
-  const consumersG = { id: 'GROUP_CONSUMERS', x: 820, y: 180, w: 340, h: 560 };
-
-  cells.push(node(context.id, 'Контекст', styles.group, context.x, context.y, context.w, context.h));
-  cells.push(node(flow.id, processTitle || 'Процесс', styles.group, flow.x, flow.y, flow.w, flow.h));
-  cells.push(node(consumersG.id, 'Потребители', styles.group, consumersG.x, consumersG.y, consumersG.w, consumersG.h));
-
-  // Organization (collapsed: name only; activity in details drawer)
-  if (orgName || orgActivity) {
-    const label = orgName ? `Организация: ${orgName}` : 'Организация';
-    cells.push(node('ORG', label, styles.textOnlyLeft, 15, 42, 700, 40, context.id));
-  }
-
-  // Goal (collapsed: label only; full goal in details drawer)
-  if (goal) {
-    cells.push(node('GOAL', `Цель: ${short(goal)}`, styles.tag, 15, 84, 260, 50, context.id));
-  }
-
-  // Owner appears only when the role/position is known.
-  // If we only have a name without a role, do not render it (avoids the "fio without role" issue).
-  if (ownerPos) {
-    const ownerLabel = [ownerName, ownerPos].filter(Boolean).join(' - ');
-    // Place within context group.
-    cells.push(node('OWNER', ownerLabel || ownerPos, styles.ownerLabel, 320, 84, 420, 50, context.id));
-  }
-
-  // Flow nodes
-  const flowX = 260;
-  const flowW = 440;
-  const startY = 70;
-  const gapY = 130;
-
-  if (start) {
-    cells.push(node('START', 'Начало', styles.terminator, 50, startY, 220, 70, flow.id));
-  }
-
-  // Process (collapsed: title only; description in details drawer)
-  cells.push(node('PROC', `Процесс: ${processTitle}`, styles.process, flowX, startY, flowW, 110, flow.id));
-
-  if (product) {
-    cells.push(node('PRODUCT', `Продукт: ${short(product)}`, styles.process, flowX, startY + gapY, flowW, 100, flow.id));
-  }
-
-  if (end) {
-    cells.push(node('END', 'Конец', styles.terminator, flowX, startY + gapY * 2, flowW, 70, flow.id));
-  }
-
-  // Minimal arrows, like a flow.
-  if (start) edges.push(edge('E_START_PROC', 'START', 'PROC', styles.edge));
-  if (product) edges.push(edge('E_PROC_PRODUCT', 'PROC', 'PRODUCT', styles.edge));
-  if (product && end) edges.push(edge('E_PRODUCT_END', 'PRODUCT', 'END', styles.edge));
-
-  // Consumers (collapsed labels; details in drawer)
-  if (consumers.length) {
-    const max = Math.min(10, consumers.length);
-    for (let i = 0; i < max; i++) {
-      const c: any = consumers[i];
-      const kind = typeof c === 'string' ? '' : String(c?.kind || '').trim();
-      const label = typeof c === 'string' ? String(c).trim() : String(c?.fullName || c?.name || '').trim();
-      const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
-      const shown = [label || (kind === 'org' ? 'Организация' : kind === 'group' ? 'Группа' : 'Персона'), extra]
-        .filter(Boolean)
-        .join('\n');
-      const id = `CONS${i + 1}`;
-      const x = 30;
-      const y = 60 + i * 90;
-      cells.push(node(id, shown, styles.ellipse, x, y, 280, 70, consumersG.id));
-      if (product) edges.push(edge(`E_PRODUCT_${id}`, 'PRODUCT', id, styles.edge));
-    }
-  }
-
-  const mxGraphModelXml = [
-    `<mxGraphModel dx="${canvasW}" dy="${canvasH}" grid="1" gridSize="10" guides="1" tooltips="1" connect="0" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">`,
-    '  <root>',
-    '    <mxCell id="0"/>',
-    '    <mxCell id="1" parent="0"/>',
-    ...cells,
-    ...edges,
-    '  </root>',
-    '</mxGraphModel>',
-  ].join('\n');
-
-  const now = new Date().toISOString();
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    `<mxfile host="app.diagrams.net" modified="${escapeXml(now)}" agent="AISDK" version="22.1.0" type="device">`,
-    '  <diagram id="diagram-1" name="Page-1">',
-    `    ${mxGraphModelXml.replace(/\n/g, '\n    ')}`,
-    '  </diagram>',
-    '</mxfile>',
-  ].join('\n');
-}
-
 export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramState }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -402,7 +146,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
 
   const formattedContent = useMemo(() => formatDocumentContent(viewContent), [viewContent]);
 
-  const drawioXml = useMemo(() => buildDrawioXmlFromState(displayTitle, diagramState), [displayTitle, diagramState]);
+  const drawioXml = useMemo(
+    () => buildDrawioXmlFromState(displayTitle, diagramState, attachments || []),
+    [displayTitle, diagramState, attachments]
+  );
 
   const selectedDetails = useMemo(() => {
     const id = (selectedDiagramNodeId || '').toUpperCase();
@@ -452,6 +199,16 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
       const label = typeof c === 'string' ? String(c).trim() : String(c?.fullName || c?.name || '').trim();
       const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
       return build('Потребитель', [label, extra].filter(Boolean).join('\n'));
+    }
+
+    const graphNodes = Array.isArray(s?.graph?.nodes) ? s!.graph!.nodes! : [];
+    if (graphNodes.length) {
+      const node = graphNodes.find((n) => String(n?.id || '').trim().toUpperCase() === id);
+      if (node) {
+        const label = String(node.label || '').trim() || id;
+        const details = String((node as any)?.details || '').trim();
+        return build(label, details);
+      }
     }
 
     return null;
@@ -706,7 +463,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                   xml={drawioXml}
                   ariaLabel="Схема документа"
                   onNodeClick={(nodeId) => {
-                    setSelectedDiagramNodeId((prev) => (prev?.toUpperCase() === nodeId.toUpperCase() ? null : nodeId));
+                    setSelectedDiagramNodeId(nodeId);
                   }}
                 />
               ) : (

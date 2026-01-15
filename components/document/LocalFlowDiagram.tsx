@@ -247,6 +247,14 @@ function unionBounds(a: { minX: number; minY: number; maxX: number; maxY: number
   };
 }
 
+function rectUnion(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) {
+  const minX = Math.min(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x + a.width, b.x + b.width);
+  const maxY = Math.max(a.y + a.height, b.y + b.height);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
 function updateXmlWithVertexPositions(xml: string, vertices: Vertex[]) {
   const trimmed = String(xml || '').trim();
   if (!trimmed) return '';
@@ -467,6 +475,19 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     return m;
   }, [worldVertices]);
 
+  const detailLinks = useMemo(() => {
+    const byDetailId = new Map<string, string>();
+    const byBaseId = new Map<string, string>();
+    for (const v of model.vertices) {
+      const m = parseStyle(v.style);
+      const detailFor = (m.get('detailfor') || '').trim();
+      if (!detailFor) continue;
+      byDetailId.set(v.id, detailFor);
+      if (!byBaseId.has(detailFor)) byBaseId.set(detailFor, v.id);
+    }
+    return { byDetailId, byBaseId };
+  }, [model.vertices]);
+
   const resetView = () => {
     const container = containerRef.current;
     if (!container) return;
@@ -518,6 +539,17 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     const fitted = fitRectToAspect(base, aspect);
     hasUserTransformRef.current = true;
     setCamera({ x: fitted.x, y: fitted.y, w: fitted.width, h: fitted.height });
+  };
+
+  const zoomToNode = (nodeId: string) => {
+    const base = worldVerticesById.get(nodeId);
+    if (!base) return;
+    const detailId = detailLinks.byBaseId.get(nodeId);
+    const detail = detailId ? worldVerticesById.get(detailId) : null;
+    const rect = detail
+      ? rectUnion({ x: base.x, y: base.y, width: base.width, height: base.height }, { x: detail.x, y: detail.y, width: detail.width, height: detail.height })
+      : { x: base.x, y: base.y, width: base.width, height: base.height };
+    zoomToWorldRect(rect);
   };
 
   useEffect(() => {
@@ -728,8 +760,10 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     const nodeEl = target?.closest('[data-node-id]') as Element | null;
     const id = (nodeEl?.getAttribute('data-node-id') || '').trim();
     if (!id) return;
-    if (/^GROUP_/i.test(id)) return;
-    if (onNodeClick) onNodeClick(id);
+    const baseId = detailLinks.byDetailId.get(id) || id;
+    if (/^GROUP_/i.test(baseId)) return;
+    zoomToNode(baseId);
+    if (onNodeClick) onNodeClick(baseId);
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -741,17 +775,9 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
       resetView();
       return;
     }
-    const v = worldVerticesById.get(id);
-    if (!v) return;
-    const container = containerRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    const aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
-    const margin = 40;
-    const base = { x: v.x - margin, y: v.y - margin, width: v.width + margin * 2, height: v.height + margin * 2 };
-    const fitted = fitRectToAspect(base, aspect);
-    hasUserTransformRef.current = true;
-    setCamera({ x: fitted.x, y: fitted.y, w: fitted.width, h: fitted.height });
+    const baseId = detailLinks.byDetailId.get(id) || id;
+    if (/^GROUP_/i.test(baseId)) return;
+    zoomToNode(baseId);
   };
 
   const copyXml = async () => {

@@ -2,7 +2,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { DocumentPanel, type DocumentState, type ProcessDiagramState } from '@/components/document/DocumentPanel';
+import { DocumentPanel } from '@/components/document/DocumentPanel';
+import type { DocumentState, ProcessDiagramState } from '@/lib/document/types';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
 import { PromptsManager } from './api/promts/PromtsManager';
 import { Header } from '@/components/chat/Header';
@@ -47,6 +48,10 @@ export default function ChatPage() {
     setSelectedPromptId(prompt?.id ?? null);
   }, []);
 
+  const handlePromptsReady = useCallback(() => {
+    setPromptsLoaded(true);
+  }, []);
+
   const handleRegenerate = (messageId: string) => {
     const index = messages.findIndex(m => m.id === messageId);
     if (index === -1) return;
@@ -87,6 +92,7 @@ export default function ChatPage() {
 
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
+  const conversationsListRef = useRef<any[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   // Chat that user is currently viewing in the UI.
   const [viewConversationId, setViewConversationId] = useState<string | null>(null);
@@ -108,6 +114,10 @@ export default function ChatPage() {
     if (!viewConversationId) return null;
     return (conversationsList || []).find((c: any) => c?.id === viewConversationId) || null;
   }, [conversationsList, viewConversationId]);
+
+  useEffect(() => {
+    conversationsListRef.current = conversationsList || [];
+  }, [conversationsList]);
 
   const updateEngineDocument = useCallback(
     (updater: (prev: DocumentState) => DocumentState) => {
@@ -330,37 +340,96 @@ export default function ChatPage() {
 
   const displayStatus = viewConversationId === conversationId ? status : 'ready';
 
-  // Load diagram state per conversation.
+  const prepareSend = useCallback(async () => {
+    if (!viewConversationId) return conversationId;
+    if (viewConversationId === conversationId) return conversationId;
+
+    // If another chat is still streaming, block sending to avoid mixing contexts.
+    if (status !== 'ready') {
+      alert('Сейчас ИИ отвечает в другом чате. Дождитесь завершения ответа, прежде чем отправлять сообщение здесь.');
+      return null;
+    }
+
+    const target = viewConversationId;
+    setConversationId(target);
+    const hydrated = toUIMessages(viewedConversation?.messages || []);
+    setLastSavedAssistantId(getLastAssistantId(hydrated));
+    setMessages(hydrated);
+    setDocument(viewDocument);
+    return target;
+  }, [viewConversationId, conversationId, status, viewedConversation, viewDocument, setMessages]);
+
+  const handleUserMessageQueued = useCallback((queuedMessage: any) => {
+    const requestConvId = viewConversationId ?? conversationId;
+    if (!requestConvId) return;
+    if (!queuedMessage?.id) return;
+    if (lastDiagramUserMessageIdRef.current === String(queuedMessage.id)) return;
+
+    lastDiagramUserMessageIdRef.current = String(queuedMessage.id);
+
+    const slice = [...(messages || []), queuedMessage]
+      .slice(-16)
+      .map((m: any) => ({
+        id: m?.id,
+        role: m?.role,
+        content: Array.isArray(m?.parts)
+          ? (m.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text || '')
+          : (typeof m?.text === 'string' ? m.text : ''),
+        parts: Array.isArray(m?.parts) ? m.parts : undefined,
+      }))
+      .filter((m: any) => m.role && typeof m.content === 'string');
+
+    // Fire-and-forget: do not block chat/doc streaming.
+    void (async () => {
+      try {
+        const resp = await fetch('/api/diagram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: slice, state: diagramState }),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (j?.success && j?.state) {
+          if (viewConversationId === requestConvId) setDiagramState(j.state);
+          else localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify(j.state));
+        }
+      } catch (e) {
+        console.warn('Failed to update diagram state (queued)', e);
+      }
+    })();
+  }, [conversationId, viewConversationId, messages, diagramState]);
+
+  // Load diagram state per viewed conversation.
   useEffect(() => {
-    if (!conversationId) {
+    if (!viewConversationId) {
       setDiagramState(null);
       lastDiagramUserMessageIdRef.current = null;
       return;
     }
     try {
-      const raw = localStorage.getItem(`diagramState:${conversationId}`);
+      const raw = localStorage.getItem(`diagramState:${viewConversationId}`);
       if (raw) setDiagramState(JSON.parse(raw));
       else setDiagramState(null);
     } catch {
       setDiagramState(null);
     }
     lastDiagramUserMessageIdRef.current = null;
-  }, [conversationId]);
+  }, [viewConversationId]);
 
-  // Persist diagram state.
+  // Persist diagram state for the viewed conversation.
   useEffect(() => {
-    if (!conversationId) return;
+    if (!viewConversationId) return;
     try {
-      if (!diagramState) localStorage.removeItem(`diagramState:${conversationId}`);
-      else localStorage.setItem(`diagramState:${conversationId}`, JSON.stringify(diagramState));
+      if (!diagramState) localStorage.removeItem(`diagramState:${viewConversationId}`);
+      else localStorage.setItem(`diagramState:${viewConversationId}`, JSON.stringify(diagramState));
     } catch {
       // ignore
     }
-  }, [diagramState, conversationId]);
+  }, [diagramState, viewConversationId]);
 
-  // Update diagram state after each new user message.
+  // Update diagram state after each new user message (only for active view).
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId || !viewConversationId) return;
+    if (conversationId !== viewConversationId) return;
     if (!Array.isArray(messages) || messages.length === 0) return;
 
     const lastUser = [...messages].reverse().find((m: any) => m?.role === 'user');
@@ -381,6 +450,7 @@ export default function ChatPage() {
 
     lastDiagramUserMessageIdRef.current = lastUserId;
 
+    const requestConvId = conversationId;
     const slice = (messages || []).slice(-16).map((m: any) => ({
       id: m?.id,
       role: m?.role,
@@ -398,17 +468,20 @@ export default function ChatPage() {
           body: JSON.stringify({ messages: slice, state: diagramState }),
         });
         const j = await resp.json().catch(() => ({}));
-        if (j?.success && j?.state) setDiagramState(j.state);
+        if (j?.success && j?.state) {
+          if (viewConversationId === requestConvId) setDiagramState(j.state);
+          else localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify(j.state));
+        }
       } catch (e) {
         console.warn('Failed to update diagram state', e);
       }
     })();
-  }, [messages, conversationId, diagramState]);
+  }, [messages, conversationId, viewConversationId, diagramState]);
 
   const attachedFiles = useMemo(() => {
     const collected: Array<{ id?: string; name?: string; url?: string; mediaType?: string }> = [];
 
-    for (const message of messages || []) {
+    for (const message of displayMessages || []) {
       if (message?.role !== 'user') continue;
 
       const metaAtts = Array.isArray((message as any)?.metadata?.attachments)
@@ -446,7 +519,7 @@ export default function ChatPage() {
     });
 
     return deduped;
-  }, [messages]);
+  }, [displayMessages]);
   useEffect(() => {
     if (!conversationId) return;
     setConversationsList((prev) =>
@@ -462,7 +535,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!authUser?.id || !conversationId) return;
     if (String(conversationId).startsWith('local-')) return;
-    if (status === 'streaming') return;
+    if (status !== 'ready') return;
     const last = messages.at(-1);
     if (!last || last.role !== 'assistant') return;
     if (last.id === lastSavedAssistantId) return;
@@ -662,42 +735,42 @@ export default function ChatPage() {
   })();
 
   const removeConversationFromState = (convId: string) => {
-    setConversationsList((prev) => {
-      const updated = prev.filter((c) => c.id !== convId);
-      if (viewConversationId === convId) {
-        if (updated.length > 0) {
-          const nextConv = updated[0];
-          setViewConversationId(nextConv.id ?? null);
-          if (nextConv?.id) localStorage.setItem('activeConversationId', nextConv.id);
-        } else {
-          setViewConversationId(null);
-          localStorage.removeItem('activeConversationId');
-          setViewDocument({ title: '', content: '', isStreaming: false });
-        }
-      }
+    const prev = conversationsListRef.current || [];
+    const updated = prev.filter((c) => c.id !== convId);
+    setConversationsList(updated);
 
-      if (conversationId === convId) {
-        if (updated.length > 0) {
-          const nextConv = updated[0];
-          setConversationId(nextConv.id ?? null);
-          if (nextConv?.messages) {
-            setMessages(toUIMessages(nextConv.messages));
-          } else {
-            setMessages([]);
-          }
-          if (nextConv?.id) {
-            localStorage.setItem('activeConversationId', nextConv.id);
-          }
-        } else {
-          setConversationId(null);
-          setMessages([]);
-          localStorage.removeItem('activeConversationId');
-          setDocument({ title: '', content: '', isStreaming: false });
-          setViewDocument({ title: '', content: '', isStreaming: false });
-        }
+    if (viewConversationId === convId) {
+      if (updated.length > 0) {
+        const nextConv = updated[0];
+        setViewConversationId(nextConv.id ?? null);
+        if (nextConv?.id) localStorage.setItem('activeConversationId', nextConv.id);
+      } else {
+        setViewConversationId(null);
+        localStorage.removeItem('activeConversationId');
+        setViewDocument({ title: '', content: '', isStreaming: false });
       }
-      return updated;
-    });
+    }
+
+    if (conversationId === convId) {
+      if (updated.length > 0) {
+        const nextConv = updated[0];
+        setConversationId(nextConv.id ?? null);
+        if (nextConv?.messages) {
+          setMessages(toUIMessages(nextConv.messages));
+        } else {
+          setMessages([]);
+        }
+        if (nextConv?.id) {
+          localStorage.setItem('activeConversationId', nextConv.id);
+        }
+      } else {
+        setConversationId(null);
+        setMessages([]);
+        localStorage.removeItem('activeConversationId');
+        setDocument({ title: '', content: '', isStreaming: false });
+        setViewDocument({ title: '', content: '', isStreaming: false });
+      }
+    }
   };
 
   const handleRenameConversation = async (conv: any) => {
@@ -816,8 +889,8 @@ export default function ChatPage() {
     } as any;
     setConversationsList((prev) => [localConv, ...prev]);
     setViewConversationId(localId);
-    // While AI is streaming in another conversation, don't touch engine state.
-    if (status !== 'streaming') {
+    // While AI is busy in another conversation, don't touch engine state.
+    if (status === 'ready') {
       setConversationId(localId);
       setMessages([]);
       // Reset engine doc on new chat
@@ -849,8 +922,8 @@ export default function ChatPage() {
       setViewDocument({ title: '', content: '', isStreaming: false });
     }
 
-    // If AI is currently streaming in another chat, do NOT change engine conversation or messages.
-    if (status === 'streaming' && conversationId && conversation.id !== conversationId) {
+    // If AI is busy in another chat, do NOT change engine conversation or messages.
+    if (status !== 'ready' && conversationId && conversation.id !== conversationId) {
       return;
     }
 
@@ -949,12 +1022,14 @@ export default function ChatPage() {
                 stop={stop}
                 selectedPromptId={selectedPromptId}
                 documentContent={document.content}
+                prepareSend={prepareSend}
+                onUserMessageQueued={handleUserMessageQueued}
               />
               <PromptsManager
                 className="w-full"
                 onPromptSelect={handlePromptSelect}
                 userId={authUser?.id ?? null}
-                onReady={() => setPromptsLoaded(true)}
+                onReady={handlePromptsReady}
               />
             </div>
           </div>

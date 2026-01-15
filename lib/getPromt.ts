@@ -3,6 +3,10 @@ import { RecordId } from "surrealdb";
 import crypto from 'crypto';
 
 const db = new Surreal();
+const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
+  isConnected: false,
+  logged: false,
+});
 
 export type Prompt = {
   id: string;
@@ -39,10 +43,17 @@ function convertToPrompt(record: any): Prompt {
   };
 }
 
-let isConnected = false;
 // Функция для подключения к бд
 async function connectDB() {
-  if (isConnected) return;
+  if (surrealState.isConnected) {
+    try {
+      // Probe the connection; if socket is dead, Surreal will throw.
+      await db.query('RETURN 1;');
+      return;
+    } catch {
+      surrealState.isConnected = false;
+    }
+  }
 
   await db.connect(
     "wss://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/rpc",
@@ -56,8 +67,11 @@ async function connectDB() {
     }
   );
 
-  isConnected = true;
-  console.log("✅ Connected to SurrealDB");
+  surrealState.isConnected = true;
+  if (!surrealState.logged && process.env.SURREAL_LOG === '1') {
+    surrealState.logged = true;
+    console.log("✅ Connected to SurrealDB");
+  }
 
   try {
     await db.query(`
@@ -308,13 +322,17 @@ export async function saveConversation(userId: string, messages: any, documentCo
   const userClean = userRef.replace(/^users:/, '');
   const userRecord = new RecordId('users', userClean);
   // sanitize messages to plain JSON-friendly objects
-  console.log('saveConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
+  if (process.env.SURREAL_LOG === '1') {
+    console.log('saveConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
+  }
   const sanitized = Array.isArray(messages) ? messages.map(sanitizeMessage) : [];
 
   // Ensure we pass a pure JSON structure (no prototype/functions)
   const sanitizedClean = JSON.parse(JSON.stringify(sanitized));
 
-  console.log('saveConversation: sanitized length=', Array.isArray(sanitizedClean) ? sanitizedClean.length : 'N/A', 'sample=', sanitizedClean[0]);
+  if (process.env.SURREAL_LOG === '1') {
+    console.log('saveConversation: sanitized length=', Array.isArray(sanitizedClean) ? sanitizedClean.length : 'N/A', 'sample=', sanitizedClean[0]);
+  }
   /*
   try {
     console.log('saveConversation: final DB payload userRef=', userRef, 'messages=', JSON.stringify(sanitizedClean));
@@ -383,7 +401,9 @@ export async function saveConversation(userId: string, messages: any, documentCo
   try {
     const currentMessages = (storedConv as any)?.messages;
     if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
-      console.log('saveConversation: attempting explicit UPDATE to set messages via SQL for', String(conv.id));
+      if (process.env.SURREAL_LOG === '1') {
+        console.log('saveConversation: attempting explicit UPDATE to set messages via SQL for', String(conv.id));
+      }
       // Use CONTENT to set the messages fields explicitly as a stronger fallback
       const uq = await db.query(`UPDATE ${convRecord} CONTENT $content RETURN AFTER;`, { content: { messages: sanitizedClean, messages_raw: JSON.stringify(sanitizedClean) } }).catch(() => undefined) as any;
       /*

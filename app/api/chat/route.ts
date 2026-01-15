@@ -313,7 +313,7 @@ export async function POST(req: Request) {
     return '';
   };
 
-  const baseMessages: any[] = Array.isArray(messages) && messages.length > 0
+  let baseMessages: any[] = Array.isArray(messages) && messages.length > 0
     ? messages
     : (body && (body.text || body.message)
       ? [{
@@ -323,6 +323,51 @@ export async function POST(req: Request) {
           content: String(body.text ?? body.message ?? ''),
         }]
       : []);
+
+  const inboundFiles: any[] = Array.isArray((body as any)?.files)
+    ? (body as any).files
+    : Array.isArray((body as any)?.message?.files)
+      ? (body as any).message.files
+      : [];
+
+  if (inboundFiles.length > 0) {
+    const fileParts = inboundFiles
+      .map((file: any) => {
+        const url = file?.url || file?.data || '';
+        if (!url) return null;
+        return {
+          type: 'file',
+          id: file?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+          filename: file?.filename || file?.name || 'attachment',
+          url,
+          mediaType: file?.mediaType || file?.mimeType || file?.type,
+        };
+      })
+      .filter(Boolean);
+
+    if (fileParts.length > 0) {
+      if (!Array.isArray(baseMessages) || baseMessages.length === 0) {
+        baseMessages = [{
+          id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
+          role: 'user',
+          parts: fileParts,
+          content: '',
+        }];
+      } else {
+        const lastIdx = [...baseMessages].map((m, i) => ({ m, i })).reverse().find(({ m }) => m?.role === 'user')?.i ?? -1;
+        if (lastIdx >= 0) {
+          const last = baseMessages[lastIdx];
+          const existingFiles = Array.isArray(last?.parts)
+            ? last.parts.filter((p: any) => p?.type === 'file')
+            : [];
+          if (existingFiles.length === 0) {
+            last.parts = Array.isArray(last?.parts) ? [...last.parts, ...fileParts] : [...fileParts];
+            if (typeof last.content !== 'string') last.content = '';
+          }
+        }
+      }
+    }
+  }
 
   console.log('📝 Base messages prepared:', baseMessages.length);
 
@@ -375,7 +420,9 @@ export async function POST(req: Request) {
   // Drop completely empty messages to avoid provider errors (content/parts must exist)
   const normalizedMessagesNonEmpty = normalizedMessages.filter((m) => {
     const text = typeof m.content === 'string' ? m.content.trim() : '';
-    return Boolean(text);
+    const hasFileParts = Array.isArray(m?.parts) && m.parts.some((p: any) => p?.type === 'file');
+    const hasAttachments = Array.isArray(m?.metadata?.attachments) && m.metadata.attachments.length > 0;
+    return Boolean(text) || hasFileParts || hasAttachments;
   });
 
   if (normalizedMessages.length !== normalizedMessagesNonEmpty.length) {
