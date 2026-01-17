@@ -323,6 +323,11 @@ function hasOwnerIcon(v: Vertex) {
   return m.get('ownericon') === '1' || m.has('ownericon');
 }
 
+function isDetailFrame(v: Vertex) {
+  const m = parseStyle(v.style);
+  return m.get('detailframe') === '1' || m.has('detailframe');
+}
+
 function getSpacingLeft(style: string) {
   const m = parseStyle(style);
   const v = m.get('spacingleft');
@@ -431,6 +436,7 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
   });
   const [isDragging, setIsDragging] = useState(false);
   const dragMovedRef = useRef(false);
+  const suppressClickRef = useRef(false);
 
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 200;
@@ -449,7 +455,8 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
   }, [xml]);
 
   const effectiveBounds = useMemo(() => {
-    const current = computeBounds(buildWorldVertices(model.vertices));
+    const visible = buildWorldVertices(model.vertices).filter((v) => !isDetailFrame(v));
+    const current = computeBounds(visible);
     // Never shrink below the initial bounds to avoid viewBox "jump".
     return unionBounds(baseBoundsRef.current, current);
   }, [model.vertices]);
@@ -469,24 +476,20 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
 
   const worldVertices = useMemo(() => buildWorldVertices(model.vertices), [model.vertices]);
 
+  const visibleVertices = useMemo(() => worldVertices.filter((v) => !isDetailFrame(v)), [worldVertices]);
+
   const worldVerticesById = useMemo(() => {
     const m = new Map<string, Vertex>();
     for (const v of worldVertices) m.set(v.id, v);
     return m;
   }, [worldVertices]);
 
-  const detailLinks = useMemo(() => {
-    const byDetailId = new Map<string, string>();
-    const byBaseId = new Map<string, string>();
-    for (const v of model.vertices) {
-      const m = parseStyle(v.style);
-      const detailFor = (m.get('detailfor') || '').trim();
-      if (!detailFor) continue;
-      byDetailId.set(v.id, detailFor);
-      if (!byBaseId.has(detailFor)) byBaseId.set(detailFor, v.id);
-    }
-    return { byDetailId, byBaseId };
-  }, [model.vertices]);
+  const visibleVerticesById = useMemo(() => {
+    const m = new Map<string, Vertex>();
+    for (const v of visibleVertices) m.set(v.id, v);
+    return m;
+  }, [visibleVertices]);
+
 
   const resetView = () => {
     const container = containerRef.current;
@@ -544,11 +547,7 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
   const zoomToNode = (nodeId: string) => {
     const base = worldVerticesById.get(nodeId);
     if (!base) return;
-    const detailId = detailLinks.byBaseId.get(nodeId);
-    const detail = detailId ? worldVerticesById.get(detailId) : null;
-    const rect = detail
-      ? rectUnion({ x: base.x, y: base.y, width: base.width, height: base.height }, { x: detail.x, y: detail.y, width: detail.width, height: detail.height })
-      : { x: base.x, y: base.y, width: base.width, height: base.height };
+    const rect = { x: base.x, y: base.y, width: base.width, height: base.height };
     zoomToWorldRect(rect);
   };
 
@@ -739,6 +738,8 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     if (!el) return;
     if (!dragState.current.active) return;
     if (dragState.current.pointerId !== e.pointerId) return;
+    const { mode, nodeId } = dragState.current;
+    const wasClick = !dragMovedRef.current && mode === 'node' && nodeId;
     dragState.current.active = false;
     dragState.current.mode = null;
     dragState.current.pointerId = null;
@@ -748,9 +749,26 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     } catch {
       // ignore
     }
+
+    if (wasClick && nodeId) {
+      suppressClickRef.current = true;
+      const baseId = nodeId;
+      if (!/^GROUP_/i.test(baseId)) {
+        const targetVertex = worldVerticesById.get(baseId);
+        if (!isDetailFrame(targetVertex as Vertex)) {
+          zoomToNode(baseId);
+          if (onNodeClick) onNodeClick(baseId);
+          console.log('[diagram] click', baseId);
+        }
+      }
+    }
   };
 
   const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     if (dragMovedRef.current) {
       dragMovedRef.current = false;
       return;
@@ -760,10 +778,12 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     const nodeEl = target?.closest('[data-node-id]') as Element | null;
     const id = (nodeEl?.getAttribute('data-node-id') || '').trim();
     if (!id) return;
-    const baseId = detailLinks.byDetailId.get(id) || id;
+    const baseId = id;
     if (/^GROUP_/i.test(baseId)) return;
+    if (isDetailFrame(worldVerticesById.get(baseId) as Vertex)) return;
     zoomToNode(baseId);
     if (onNodeClick) onNodeClick(baseId);
+    console.log('[diagram] click', baseId);
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -775,8 +795,9 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
       resetView();
       return;
     }
-    const baseId = detailLinks.byDetailId.get(id) || id;
+    const baseId = id;
     if (/^GROUP_/i.test(baseId)) return;
+    if (isDetailFrame(worldVerticesById.get(baseId) as Vertex)) return;
     zoomToNode(baseId);
   };
 
@@ -900,8 +921,8 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
 
             {/* edges */}
             {model.edges.map((e) => {
-              const s = worldVerticesById.get(e.source);
-              const t = worldVerticesById.get(e.target);
+              const s = visibleVerticesById.get(e.source);
+              const t = visibleVerticesById.get(e.target);
               if (!s || !t) return null;
 
               const sc = getCenter(s);
@@ -929,7 +950,7 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
             })}
 
             {/* vertices */}
-            {[...worldVertices]
+            {[...visibleVertices]
               .sort((a, b) => Number(isGroupVertex(b)) - Number(isGroupVertex(a)))
               .map((v) => {
               const kind = pickVertexKind(v.style);
