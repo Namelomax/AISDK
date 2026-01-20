@@ -17,7 +17,6 @@ import remarkBreaks from 'remark-breaks';
 
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
-import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 import { LocalFlowDiagram } from '@/components/document/LocalFlowDiagram';
 import type { Attachment, DocumentState, ProcessDiagramState } from '@/lib/document/types';
 import { extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
@@ -165,40 +164,71 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
       return cleaned ? { title, body: cleaned } : null;
     };
 
-    if (id === 'PROC') {
+    const templateMap: Record<string, string> = {
+      'WUNQLDYkCMDTQONQ86G9-3': 'PROC',
+      'N9EBFPKTY8XSMP5IMMAE-20': 'GOAL',
+      'N9EBFPKTY8XSMP5IMMAE-26': 'START',
+      'N9EBFPKTY8XSMP5IMMAE-27': 'END',
+      'N9EBFPKTY8XSMP5IMMAE-9': 'OWNER_POS',
+      'N9EBFPKTY8XSMP5IMMAE-13': 'OWNER_NAME',
+      'N9EBFPKTY8XSMP5IMMAE-33': 'PRODUCT',
+      'N9EBFPKTY8XSMP5IMMAE-34': 'PRODUCT',
+      'N9EBFPKTY8XSMP5IMMAE-39': 'CONS1',
+      'N9EBFPKTY8XSMP5IMMAE-43': 'CONS2',
+      'N9EBFPKTY8XSMP5IMMAE-47': 'CONS3',
+    };
+
+    const mapped = templateMap[id] || id;
+
+    if (mapped === 'PROC') {
       const name = String(s?.process?.name || '').trim();
       const desc = String(s?.process?.description || '').trim();
       return build('Процесс', [name, desc].filter(Boolean).join('\n\n'));
     }
-    if (id === 'ORG') {
+    if (mapped === 'ORG') {
       const name = String(s?.organization?.name || '').trim();
       const activity = String(s?.organization?.activity || '').trim();
       return build('Организация', [name, activity].filter(Boolean).join('\n\n'));
     }
-    if (id === 'GOAL') {
+    if (mapped === 'GOAL') {
       return build('Цель', String(s?.goal || '').trim());
     }
-    if (id === 'OWNER') {
+    if (mapped === 'OWNER' || mapped === 'OWNER_NAME' || mapped === 'OWNER_POS') {
       const fullName = String(s?.owner?.fullName || '').trim();
       const position = String(s?.owner?.position || '').trim();
       return build('Владелец', [fullName, position].filter(Boolean).join('\n'));
     }
-    if (id === 'PRODUCT') {
+    if (mapped === 'PRODUCT') {
       return build('Продукт', String(s?.product || '').trim());
     }
-    if (id === 'START') {
+    if (mapped === 'START') {
       return build('Начало', String(s?.boundaries?.start || '').trim());
     }
-    if (id === 'END') {
+    if (mapped === 'END') {
       return build('Конец', String(s?.boundaries?.end || '').trim());
     }
-    const m = id.match(/^CONS(\d+)$/i);
+    const m = mapped.match(/^CONS(\d+)$/i);
     if (m?.[1]) {
       const idx = Math.max(0, Number(m[1]) - 1);
       const c = getConsumersArray()[idx] as any;
       const label = typeof c === 'string' ? String(c).trim() : String(c?.fullName || c?.name || '').trim();
       const extra = typeof c === 'string' ? '' : String(c?.position || '').trim();
       return build('Потребитель', [label, extra].filter(Boolean).join('\n'));
+    }
+
+    const stepSlots = ['N9EBFPKTY8XSMP5IMMAE-28', 'N9EBFPKTY8XSMP5IMMAE-29', 'N9EBFPKTY8XSMP5IMMAE-30', 'N9EBFPKTY8XSMP5IMMAE-31'];
+    const stepIdx = stepSlots.indexOf(id);
+    if (stepIdx >= 0) {
+      const graphNodes = Array.isArray(s?.graph?.nodes) ? s!.graph!.nodes! : [];
+      const node = graphNodes.filter((n) => {
+        const t = String(n?.type || '').toLowerCase();
+        return t !== 'doc' && t !== 'document';
+      })[stepIdx];
+      if (node) {
+        const label = String(node.label || '').trim() || `Шаг ${stepIdx + 1}`;
+        const details = String((node as any)?.details || '').trim();
+        return build(label, details);
+      }
     }
 
     const graphNodes = Array.isArray(s?.graph?.nodes) ? s!.graph!.nodes! : [];
@@ -462,6 +492,9 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                   className="w-full h-[60vh]"
                   xml={drawioXml}
                   ariaLabel="Схема документа"
+                  activeNodeId={selectedDiagramNodeId}
+                  activeNodeDetails={selectedDetails}
+                  onDismissDetails={() => setSelectedDiagramNodeId(null)}
                   onNodeClick={(nodeId) => {
                     setSelectedDiagramNodeId(nodeId);
                   }}
@@ -471,22 +504,6 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                   Недостаточно данных для схемы. Продолжайте диалог — схема заполняется из фактов чата.
                 </div>
               )}
-
-              <Collapsible open={Boolean(selectedDetails)}>
-                <CollapsibleContent>
-                  {selectedDetails ? (
-                    <div className="mt-3 rounded-md border bg-background p-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="text-sm font-semibold">{selectedDetails.title}</div>
-                        <Button type="button" size="sm" variant="outline" onClick={() => setSelectedDiagramNodeId(null)}>
-                          Скрыть
-                        </Button>
-                      </div>
-                      <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">{selectedDetails.body}</div>
-                    </div>
-                  ) : null}
-                </CollapsibleContent>
-              </Collapsible>
             </div>
 
             <div className={viewMode === 'document' ? '' : 'hidden'}>

@@ -21,6 +21,7 @@ export type ProcessDiagramState = {
   >;
   boundaries?: { start?: string | null; end?: string | null };
   graph?: {
+    layout?: string;
     nodes?: Array<{
       id?: string | null;
       label: string;

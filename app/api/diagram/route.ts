@@ -189,8 +189,9 @@ function mergeState(prev: ProcessDiagramState | null, patch: Partial<ProcessDiag
     next.consumers = deduped;
   }
 
-  if (patch.graph && (Array.isArray(patch.graph.nodes) || Array.isArray(patch.graph.edges))) {
+  if (patch.graph && (Array.isArray(patch.graph.nodes) || Array.isArray(patch.graph.edges) || patch.graph.layout)) {
     next.graph = {
+      layout: patch.graph.layout ?? base.graph?.layout,
       nodes: Array.isArray(patch.graph.nodes) ? patch.graph.nodes : base.graph?.nodes,
       edges: Array.isArray(patch.graph.edges) ? patch.graph.edges : base.graph?.edges,
     };
@@ -245,6 +246,7 @@ const PatchSchema = z
       .optional(),
     graph: z
       .object({
+        layout: z.string().nullable().optional(),
         nodes: z
           .array(
             z.object({
@@ -292,6 +294,7 @@ function normalizeGraph(patch: Partial<ProcessDiagramState>): Partial<ProcessDia
   return {
     ...patch,
     graph: {
+      layout: patch.graph.layout,
       nodes,
       edges: patch.graph.edges,
     },
@@ -338,6 +341,7 @@ export async function POST(req: Request) {
 - Делай дополнения «рядом» с шагом: добавляй details к существующему узлу, а не новые узлы
 - У каждого узла ДОЛЖНО быть details (1–2 предложения). Если данных мало — сформулируй краткое описание по контексту.
 - Если что-то поменялось — корректируй существующие узлы (label/details/edges), можно пересобрать граф целиком
+- Всегда ставь graph.layout = "template-v1"
 - Вернуть ТОЛЬКО JSON-патч, который ДОПОЛНЯЕТ состояние (не стирай поля без причины)
 - Если в последнем сообщении нет новых фактов — верни пустой объект {}
 

@@ -10,6 +10,9 @@ type LocalFlowDiagramProps = {
   className?: string;
   ariaLabel?: string;
   onNodeClick?: (nodeId: string) => void;
+  activeNodeId?: string | null;
+  activeNodeDetails?: { title: string; body: string } | null;
+  onDismissDetails?: () => void;
 };
 
 type ViewportTransform = {
@@ -39,8 +42,10 @@ type Vertex = {
 type Edge = {
   id: string;
   style: string;
-  source: string;
-  target: string;
+  source?: string;
+  target?: string;
+  sourcePoint?: { x: number; y: number } | null;
+  targetPoint?: { x: number; y: number } | null;
 };
 
 type DiagramModel = {
@@ -141,10 +146,25 @@ function parseMxfileXml(xml: string): { vertices: Vertex[]; edges: Edge[]; bound
     }
 
     if (isEdge) {
-      const source = (el.getAttribute('source') || '').trim();
-      const target = (el.getAttribute('target') || '').trim();
-      if (!source || !target) continue;
-      edges.push({ id, style, source, target });
+      const source = (el.getAttribute('source') || '').trim() || undefined;
+      const target = (el.getAttribute('target') || '').trim() || undefined;
+      const geom = el.querySelector('mxGeometry');
+      const spEl = geom?.querySelector('mxPoint[as="sourcePoint"]');
+      const tpEl = geom?.querySelector('mxPoint[as="targetPoint"]');
+      const sourcePoint = spEl
+        ? {
+            x: Number(spEl.getAttribute('x') || '0'),
+            y: Number(spEl.getAttribute('y') || '0'),
+          }
+        : null;
+      const targetPoint = tpEl
+        ? {
+            x: Number(tpEl.getAttribute('x') || '0'),
+            y: Number(tpEl.getAttribute('y') || '0'),
+          }
+        : null;
+      if (!source && !target && !sourcePoint && !targetPoint) continue;
+      edges.push({ id, style, source, target, sourcePoint, targetPoint });
     }
   }
 
@@ -290,6 +310,8 @@ function updateXmlWithVertexPositions(xml: string, vertices: Vertex[]) {
 function pickVertexKind(style: string) {
   const s = String(style || '').toLowerCase();
   if (s.includes('shape=terminator')) return 'terminator' as const;
+  if (s.includes('shape=umlactor')) return 'actor' as const;
+  if (s.includes('shape=isocube2')) return 'cube' as const;
   if (/(^|;)ellipse(;|$)/.test(s) || s.includes('ellipse')) return 'ellipse' as const;
   if (/(^|;)text(;|$)/.test(s) || s.includes('text')) return 'text' as const;
   return 'rect' as const;
@@ -333,6 +355,13 @@ function getSpacingLeft(style: string) {
   const v = m.get('spacingleft');
   const n = v ? Number(v) : 0;
   return Number.isFinite(n) ? n : 0;
+}
+
+function getFontSize(style: string, fallback = 12) {
+  const m = parseStyle(style);
+  const v = m.get('fontsize');
+  const n = v ? Number(v) : fallback;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function fitRectToAspect(rect: { x: number; y: number; width: number; height: number }, aspect: number) {
@@ -406,7 +435,49 @@ function getAnchorPoint(v: Vertex, towardX: number, towardY: number) {
   return anchorOnRect(v, towardX, towardY);
 }
 
-export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: LocalFlowDiagramProps) {
+function getEdgeEndpoints(
+  edge: Edge,
+  byId: Map<string, Vertex>
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const s = edge.source ? byId.get(edge.source) : undefined;
+  const t = edge.target ? byId.get(edge.target) : undefined;
+
+  if (s && t) {
+    const sc = getCenter(s);
+    const tc = getCenter(t);
+    const a1 = getAnchorPoint(s, tc.x, tc.y);
+    const a2 = getAnchorPoint(t, sc.x, sc.y);
+    return { x1: a1.x, y1: a1.y, x2: a2.x, y2: a2.y };
+  }
+
+  if (edge.sourcePoint && t) {
+    const tc = getCenter(t);
+    const a2 = getAnchorPoint(t, edge.sourcePoint.x, edge.sourcePoint.y);
+    return { x1: edge.sourcePoint.x, y1: edge.sourcePoint.y, x2: a2.x, y2: a2.y };
+  }
+
+  if (edge.targetPoint && s) {
+    const sc = getCenter(s);
+    const a1 = getAnchorPoint(s, edge.targetPoint.x, edge.targetPoint.y);
+    return { x1: a1.x, y1: a1.y, x2: edge.targetPoint.x, y2: edge.targetPoint.y };
+  }
+
+  if (edge.sourcePoint && edge.targetPoint) {
+    return { x1: edge.sourcePoint.x, y1: edge.sourcePoint.y, x2: edge.targetPoint.x, y2: edge.targetPoint.y };
+  }
+
+  return null;
+}
+
+export function LocalFlowDiagram({
+  xml,
+  className,
+  ariaLabel,
+  onNodeClick,
+  activeNodeId,
+  activeNodeDetails,
+  onDismissDetails,
+}: LocalFlowDiagramProps) {
   const [copied, setCopied] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -524,6 +595,20 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     };
   };
 
+  const worldToScreen = (worldX: number, worldY: number) => {
+    const el = containerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const cw = Math.max(1, rect.width);
+    const ch = Math.max(1, rect.height);
+    return {
+      x: ((worldX - camera.x) / camera.w) * cw,
+      y: ((worldY - camera.y) / camera.h) * ch,
+      cw,
+      ch,
+    };
+  };
+
   const zoomToWorldRect = (rect: { x: number; y: number; width: number; height: number }) => {
     const container = containerRef.current;
     if (!container) return;
@@ -605,8 +690,8 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     const el = containerRef.current;
     if (!el) return;
 
-    // Middle mouse button (wheel press): pan
-    if (e.button === 1) {
+    // Middle mouse button (wheel press) or right mouse button: pan
+    if (e.button === 1 || e.button === 2) {
       e.preventDefault();
       setIsDragging(true);
       dragMovedRef.current = false;
@@ -769,6 +854,10 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
       suppressClickRef.current = false;
       return;
     }
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     if (dragMovedRef.current) {
       dragMovedRef.current = false;
       return;
@@ -777,7 +866,10 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
     const target = e.target as Element | null;
     const nodeEl = target?.closest('[data-node-id]') as Element | null;
     const id = (nodeEl?.getAttribute('data-node-id') || '').trim();
-    if (!id) return;
+    if (!id) {
+      onDismissDetails?.();
+      return;
+    }
     const baseId = id;
     if (/^GROUP_/i.test(baseId)) return;
     if (isDetailFrame(worldVerticesById.get(baseId) as Vertex)) return;
@@ -896,8 +988,45 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
         onPointerCancel={endDrag}
         onClick={onClick}
         onDoubleClick={onDoubleClick}
+        onContextMenu={(e) => e.preventDefault()}
         style={{ touchAction: 'none', cursor: isDragging ? 'grabbing' : 'default' }}
       >
+        {activeNodeId && activeNodeDetails ? (() => {
+          const v = worldVerticesById.get(activeNodeId);
+          if (!v) return null;
+          const screen = worldToScreen(v.x + v.width, v.y);
+          if (!screen) return null;
+          const boxW = 280;
+          const boxH = 160;
+          const pad = 12;
+          const preferRight = screen.x + boxW + pad <= screen.cw;
+          const left = preferRight ? screen.x + pad : Math.max(8, screen.x - boxW - pad);
+          const top = Math.min(screen.ch - boxH - 8, Math.max(8, screen.y - 8));
+
+          return (
+            <div
+              className="absolute z-20 w-[280px] rounded-md border bg-background p-3 text-sm shadow-md"
+              style={{ left, top }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-sm font-semibold">{activeNodeDetails.title}</div>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDismissDetails?.();
+                  }}
+                >
+                  Закрыть
+                </button>
+              </div>
+              <div className="mt-2 whitespace-pre-wrap text-sm text-foreground">
+                {activeNodeDetails.body}
+              </div>
+            </div>
+          );
+        })() : null}
         <svg
           ref={svgRef}
           width="100%"
@@ -921,26 +1050,15 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
 
             {/* edges */}
             {model.edges.map((e) => {
-              const s = visibleVerticesById.get(e.source);
-              const t = visibleVerticesById.get(e.target);
-              if (!s || !t) return null;
-
-              const sc = getCenter(s);
-              const tc = getCenter(t);
-              const a1 = getAnchorPoint(s, tc.x, tc.y);
-              const a2 = getAnchorPoint(t, sc.x, sc.y);
-
-              const x1 = a1.x;
-              const y1 = a1.y;
-              const x2 = a2.x;
-              const y2 = a2.y;
+              const points = getEdgeEndpoints(e, visibleVerticesById);
+              if (!points) return null;
               return (
                 <line
                   key={e.id}
-                  x1={x1}
-                  y1={y1}
-                  x2={x2}
-                  y2={y2}
+                  x1={points.x1}
+                  y1={points.y1}
+                  x2={points.x2}
+                  y2={points.y2}
                   stroke="var(--muted-foreground)"
                   strokeWidth={1.5}
                   markerEnd="url(#arrow)"
@@ -959,7 +1077,8 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
               const text = decodeHtmlToText(v.value);
               const maxChars = Math.max(12, Math.floor(v.width / 7));
               const lines = wrapTextLines(text, maxChars);
-              const lineHeight = 14;
+              const fontSize = getFontSize(v.style, 12);
+              const lineHeight = Math.max(12, Math.round(fontSize * 1.2));
               const spacingLeft = getSpacingLeft(v.style);
 
               const labelPaddingX = 10 + (ownerIcon ? Math.max(22, spacingLeft) : 0);
@@ -971,7 +1090,7 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
                 ? v.y + labelPaddingY
                 : v.y + v.height / 2 - ((lines.length - 1) * lineHeight) / 2;
 
-              return (
+                return (
                 <g
                   key={v.id}
                   data-node-id={v.id}
@@ -1020,6 +1139,74 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
                     />
                   ) : null}
 
+                  {kind === 'actor' ? (
+                    <g>
+                      <circle
+                        cx={v.x + v.width / 2}
+                        cy={v.y + Math.min(16, v.height * 0.25)}
+                        r={Math.min(v.width, v.height) * 0.18}
+                        fill="none"
+                        stroke="var(--border)"
+                        strokeWidth={1.5}
+                      />
+                      <line
+                        x1={v.x + v.width / 2}
+                        y1={v.y + v.height * 0.35}
+                        x2={v.x + v.width / 2}
+                        y2={v.y + v.height * 0.75}
+                        stroke="var(--border)"
+                        strokeWidth={1.5}
+                      />
+                      <line
+                        x1={v.x + v.width * 0.2}
+                        y1={v.y + v.height * 0.5}
+                        x2={v.x + v.width * 0.8}
+                        y2={v.y + v.height * 0.5}
+                        stroke="var(--border)"
+                        strokeWidth={1.5}
+                      />
+                      <line
+                        x1={v.x + v.width / 2}
+                        y1={v.y + v.height * 0.75}
+                        x2={v.x + v.width * 0.25}
+                        y2={v.y + v.height * 0.95}
+                        stroke="var(--border)"
+                        strokeWidth={1.5}
+                      />
+                      <line
+                        x1={v.x + v.width / 2}
+                        y1={v.y + v.height * 0.75}
+                        x2={v.x + v.width * 0.75}
+                        y2={v.y + v.height * 0.95}
+                        stroke="var(--border)"
+                        strokeWidth={1.5}
+                      />
+                    </g>
+                  ) : null}
+
+                  {kind === 'cube' ? (
+                    <g>
+                      {(() => {
+                        const ox = v.width * 0.25;
+                        const oy = v.height * 0.18;
+                        const x = v.x + ox;
+                        const y = v.y + oy;
+                        const w = v.width - ox;
+                        const h = v.height - oy;
+                        const pTop = `${x},${y} ${x + ox},${y - oy} ${x + w + ox},${y - oy} ${x + w},${y}`;
+                        const pSide = `${x + w},${y} ${x + w + ox},${y - oy} ${x + w + ox},${y + h - oy} ${x + w},${y + h}`;
+                        const pFront = `${x},${y} ${x + w},${y} ${x + w},${y + h} ${x},${y + h}`;
+                        return (
+                          <>
+                            <polygon points={pTop} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                            <polygon points={pSide} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                            <polygon points={pFront} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                          </>
+                        );
+                      })()}
+                    </g>
+                  ) : null}
+
                   {/* text-only nodes: no shape */}
 
                   {ownerIcon ? (
@@ -1054,7 +1241,7 @@ export function LocalFlowDiagram({ xml, className, ariaLabel, onNodeClick }: Loc
                     y={textY}
                     textAnchor={useTopLeftLabel ? 'start' : 'middle'}
                     dominantBaseline={useTopLeftLabel ? 'text-before-edge' : 'middle'}
-                    fontSize={12}
+                    fontSize={fontSize}
                     fill="var(--card-foreground)"
                   >
                     {lines.map((ln, i) => (
