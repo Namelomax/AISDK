@@ -101,7 +101,8 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
-  const [viewMode, setViewMode] = useState<DocumentViewMode>('document');
+  const [viewMode, setViewMode] = useState<DocumentViewMode>('diagram');
+  const [userToggledView, setUserToggledView] = useState(false);
   const [selectedDiagramNodeId, setSelectedDiagramNodeId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
@@ -123,6 +124,14 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [document.content, document.isStreaming]);
+
+  useEffect(() => {
+    if (userToggledView) return;
+    const hasDocContent = Boolean(document.isStreaming || document.title?.trim() || document.content?.trim());
+    if (hasDocContent && viewMode !== 'document') {
+      setViewMode('document');
+    }
+  }, [document.isStreaming, document.title, document.content, userToggledView, viewMode]);
 
   const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
 
@@ -218,14 +227,17 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
 
     const stepSlots = ['N9EBFPKTY8XSMP5IMMAE-28', 'N9EBFPKTY8XSMP5IMMAE-29', 'N9EBFPKTY8XSMP5IMMAE-30', 'N9EBFPKTY8XSMP5IMMAE-31'];
     const stepIdx = stepSlots.indexOf(id);
-    if (stepIdx >= 0) {
+    const extraMatch = id.match(/^STEP_(\d+)$/i);
+    const extraIdx = extraMatch?.[1] ? Math.max(0, Number(extraMatch[1]) - 1) : -1;
+    const idx = stepIdx >= 0 ? stepIdx : extraIdx;
+    if (idx >= 0) {
       const graphNodes = Array.isArray(s?.graph?.nodes) ? s!.graph!.nodes! : [];
       const node = graphNodes.filter((n) => {
         const t = String(n?.type || '').toLowerCase();
         return t !== 'doc' && t !== 'document';
-      })[stepIdx];
+      })[idx];
       if (node) {
-        const label = String(node.label || '').trim() || `Шаг ${stepIdx + 1}`;
+        const label = String(node.label || '').trim() || `Шаг ${idx + 1}`;
         const details = String((node as any)?.details || '').trim();
         return build(label, details);
       }
@@ -388,7 +400,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                 type="button"
                 size="sm"
                 variant={viewMode === 'document' ? 'secondary' : 'outline'}
-                onClick={() => setViewMode('document')}
+                onClick={() => {
+                  setUserToggledView(true);
+                  setViewMode('document');
+                }}
                 aria-label="Показать документ"
                 title="Документ"
               >
@@ -398,7 +413,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                 type="button"
                 size="sm"
                 variant={viewMode === 'diagram' ? 'secondary' : 'outline'}
-                onClick={() => setViewMode('diagram')}
+                onClick={() => {
+                  setUserToggledView(true);
+                  setViewMode('diagram');
+                }}
                 aria-label="Показать схему"
                 title="Схема"
               >

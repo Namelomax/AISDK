@@ -28,38 +28,39 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxCell id="1" parent="0"/>
 
 <!-- ОРГАНИЗАЦИЯ (верх) -->
-<mxCell id="WUNQLDYkcmdtQOnQ86g9-10" parent="1" style="text;html=1;strokeColor=#666;fillColor=#f5f5f5;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;" value="Организация" vertex="1">
+<mxCell id="WUNQLDYkcmdtQOnQ86g9-10" parent="1" style="text;html=1;strokeColor=#666;fillColor=#f5f5f5;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=18;" value="Организация" vertex="1">
 <mxGeometry height="60" width="520" x="40" y="20" as="geometry"/>
 </mxCell>
 
 <!-- ПРОЦЕСС (под организацией) -->
-<mxCell id="N9eBfpktY8xSMP5imMae-5" parent="1" style="text;html=1;strokeColor=#666;fillColor=#fff;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;" value="Процесс" vertex="1">
+<mxCell id="N9eBfpktY8xSMP5imMae-5" parent="1" style="text;html=1;strokeColor=#666;fillColor=#fff;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=18;" value="Процесс" vertex="1">
 <mxGeometry height="60" width="520" x="40" y="100" as="geometry"/>
 </mxCell>
 
 <!-- ВЛАДЕЛЕЦ (эллипс слева) -->
 <mxCell id="WUNQLDYkcmdtQOnQ86g9-4" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="" vertex="1">
 <mxGeometry height="70" width="90" x="-250" y="60" as="geometry"/>
-</mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-7" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="" vertex="1">
+<mxCell id="N9eBfpktY8xSMP5imMae-7" parent="1" 
+  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
+  value="" vertex="1" resizable="0">
 <mxGeometry height="40" width="30" x="-220" y="75" as="geometry"/>
 </mxCell>
-<mxCell id="EDGE_OWNER_TO_POSITION" edge="1" parent="1" source="N9eBfpktY8xSMP5imMae-7" target="N9eBfpktY8xSMP5imMae-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;">
+<mxCell id="EDGE_OWNER_TO_POSITION" edge="1" parent="1" source="N9eBfpktY8xSMP5imMae-7" target="N9eBfpktY8xSMP5imMae-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;endSize=36;strokeWidth=20;">
 <mxGeometry relative="1" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-9" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Должность" vertex="1">
-<mxGeometry height="20" width="140" x="-150" y="40" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-9" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;" value="Должность" vertex="1">
+<mxGeometry height="25" width="140" x="-150" y="40" as="geometry"/>
 </mxCell>
 <mxCell id="EDGE_OWNER_TO_NAME" edge="1" parent="1" source="N9eBfpktY8xSMP5imMae-7" target="N9eBfpktY8xSMP5imMae-13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;">
 <mxGeometry relative="1" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-13" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=12;whiteSpace=wrap;" value="ФИО" vertex="1">
-<mxGeometry height="20" width="140" x="-120" y="90" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-13" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=18;whiteSpace=wrap;" value="ФИО" vertex="1">
+<mxGeometry height="25" width="140" x="-120" y="90" as="geometry"/>
 </mxCell>
 
 <!-- ЦЕЛЬ (справа от владельца) -->
 <mxCell id="N9eBfpktY8xSMP5imMae-20" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=center;spacing=8;fontSize=24;fontStyle=1;" value="Цель" vertex="1">
-<mxGeometry height="60" width="90" x="620" y="80" as="geometry"/>
+<mxGeometry height="60" width="90" x="920" y="0" as="geometry"/>
 </mxCell>
 <mxCell id="WUNQLDYkcmdtQOnQ86g9-12" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-20;" value="Описание цели" vertex="1">
 <mxGeometry height="90" width="320" x="230" y="215" as="geometry"/>
@@ -67,11 +68,11 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 <!-- СТРЕЛКА ПРОЦЕССА (горизонтальная линия с шагами) -->
 <mxCell id="N9eBfpktY8xSMP5imMae-26" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;" value="Начало" vertex="1">
-<mxGeometry height="30" width="80" x="40" y="350" as="geometry"/>
+<mxGeometry height="600" width="80" x="40" y="420" as="geometry"/>
 </mxCell>
 
 <!-- Линия процесса -->
-<mxCell id="N9eBfpktY8xSMP5imMae-24" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+<mxCell id="N9eBfpktY8xSMP5imMae-24" edge="1" parent="1" style="endArrow=classic;endSize=36;strokeWidth=20;html=1;rounded=0;" value="">
 <mxGeometry height="50" relative="1" width="50" as="geometry">
 <mxPoint x="130" y="365" as="sourcePoint"/>
 <mxPoint x="945" y="365" as="targetPoint"/>
@@ -98,7 +99,7 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </mxCell>
 
 <mxCell id="N9eBfpktY8xSMP5imMae-27" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;" value="Конец" vertex="1">
-<mxGeometry height="30" width="80" x="1030" y="350" as="geometry"/>
+<mxGeometry height="30" width="80" x="905" y="420" as="geometry"/>
 </mxCell>
 
 <!-- ПОТРЕБИТЕЛИ (внизу, 3 группы) -->
@@ -110,8 +111,10 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxCell id="N9eBfpktY8xSMP5imMae-37" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="" vertex="1">
 <mxGeometry height="120" width="180" x="1150" y="120" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-38" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="" vertex="1">
-<mxGeometry height="50" width="30" x="1225" y="145" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-38" parent="1" 
+  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
+  value="" vertex="1" resizable="0">
+<mxGeometry height="40" width="40" x="1220" y="165" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-39" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 1" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="85" as="geometry"/>
@@ -121,8 +124,10 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxCell id="N9eBfpktY8xSMP5imMae-41" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="" vertex="1">
 <mxGeometry height="120" width="180" x="1150" y="280" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-42" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="" vertex="1">
-<mxGeometry height="50" width="30" x="1225" y="305" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-42" parent="1" 
+  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
+  value="" vertex="1" resizable="0">
+<mxGeometry height="50" width="40" x="1220" y="315" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-43" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 2" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="245" as="geometry"/>
@@ -132,8 +137,10 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxCell id="N9eBfpktY8xSMP5imMae-45" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="" vertex="1">
 <mxGeometry height="120" width="180" x="1150" y="440" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-46" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="" vertex="1">
-<mxGeometry height="50" width="30" x="1225" y="465" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-46" parent="1" 
+  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
+  value="" vertex="1" resizable="0">
+<mxGeometry height="50" width="40" x="1225" y="475" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-47" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 3" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="405" as="geometry"/>
@@ -173,6 +180,60 @@ function appendCellStyle(doc: Document, id: string, extra: string) {
   const style = cell.getAttribute('style') || '';
   const next = style.endsWith(';') || !style ? `${style}${extra}` : `${style};${extra}`;
   cell.setAttribute('style', next);
+}
+
+function getCellGeometry(doc: Document, id: string) {
+  const cell = doc.querySelector(`mxCell[id="${id}"]`);
+  const geom = cell?.querySelector('mxGeometry');
+  if (!geom) return null;
+  const x = Number(geom.getAttribute('x') || '0');
+  const y = Number(geom.getAttribute('y') || '0');
+  const width = Number(geom.getAttribute('width') || '0');
+  const height = Number(geom.getAttribute('height') || '0');
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+  return { x, y, width, height };
+}
+
+function setCellGeometry(doc: Document, id: string, geom: { x: number; y: number; width: number; height: number }) {
+  const cell = doc.querySelector(`mxCell[id="${id}"]`);
+  const g = cell?.querySelector('mxGeometry');
+  if (!g) return;
+  g.setAttribute('x', String(Math.round(geom.x)));
+  g.setAttribute('y', String(Math.round(geom.y)));
+  g.setAttribute('width', String(Math.round(geom.width)));
+  g.setAttribute('height', String(Math.round(geom.height)));
+}
+
+function setEdgeTargetPoint(doc: Document, id: string, point: { x: number; y: number }) {
+  const edge = doc.querySelector(`mxCell[id="${id}"]`);
+  const geom = edge?.querySelector('mxGeometry');
+  if (!geom) return;
+  let tp = geom.querySelector('mxPoint[as="targetPoint"]');
+  if (!tp) {
+    tp = doc.createElement('mxPoint');
+    tp.setAttribute('as', 'targetPoint');
+    geom.appendChild(tp);
+  }
+  tp.setAttribute('x', String(Math.round(point.x)));
+  tp.setAttribute('y', String(Math.round(point.y)));
+}
+
+function getEdgeTargetPoint(doc: Document, id: string) {
+  const edge = doc.querySelector(`mxCell[id="${id}"]`);
+  const geom = edge?.querySelector('mxGeometry');
+  const tp = geom?.querySelector('mxPoint[as="targetPoint"]');
+  if (!tp) return null;
+  const x = Number(tp.getAttribute('x') || '0');
+  const y = Number(tp.getAttribute('y') || '0');
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function hideCell(doc: Document, id: string) {
+  const cell = doc.querySelector(`mxCell[id="${id}"]`);
+  if (!cell) return;
+  cell.setAttribute('value', '');
+  appendCellStyle(doc, id, 'opacity=0;pointerEvents=0;');
 }
 
 function buildTemplateXmlFromState(state: ProcessDiagramState, attachments: Attachment[]) {
@@ -225,7 +286,7 @@ function buildTemplateXmlFromState(state: ProcessDiagramState, attachments: Atta
   if (end) updateCellValue(doc, 'N9eBfpktY8xSMP5imMae-27', end);
 
   // Продукт
-  if (product) updateCellValue(doc, 'N9eBfpktY8xSMP5imMae-33', product);
+  updateCellValue(doc, 'N9eBfpktY8xSMP5imMae-33', 'Итоговый продукт процесса');
   appendCellStyle(doc, 'N9eBfpktY8xSMP5imMae-53', 'detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-33;opacity=0;pointerEvents=0;');
   updateCellValue(doc, 'N9eBfpktY8xSMP5imMae-53', product ? `Описание продукта: ${product}` : 'Описание продукта');
   updateCellValue(doc, 'N9eBfpktY8xSMP5imMae-53', product ? `Описание продукта: ${product}` : 'Описание продукта');
@@ -256,6 +317,88 @@ function buildTemplateXmlFromState(state: ProcessDiagramState, attachments: Atta
     const slotId = beadSlots[i];
     if (!node) continue;
     updateCellValue(doc, slotId, String(node.label || '').trim() || `Шаг ${i + 1}`);
+  }
+
+  // Hide unused template steps so no placeholder "Шаг 4" remains
+  if (flowNodes.length < beadSlots.length) {
+    for (let i = flowNodes.length; i < beadSlots.length; i++) {
+      hideCell(doc, beadSlots[i]);
+    }
+  }
+
+  // Add extra steps beyond template slots
+  if (flowNodes.length > beadSlots.length) {
+    const root = doc.querySelector('root');
+    const baseStepId = beadSlots[0];
+    const baseStep = doc.querySelector(`mxCell[id="${baseStepId}"]`);
+    const baseGeom = getCellGeometry(doc, baseStepId);
+    const secondGeom = beadSlots[1] ? getCellGeometry(doc, beadSlots[1]) : null;
+    const stepDx = baseGeom && secondGeom ? secondGeom.x - baseGeom.x : 180;
+
+    if (root && baseStep && baseGeom) {
+      for (let i = beadSlots.length; i < flowNodes.length; i++) {
+        const node = flowNodes[i];
+        const clone = baseStep.cloneNode(true) as Element;
+        const id = `STEP_${i + 1}`;
+        clone.setAttribute('id', id);
+        clone.setAttribute('value', wrapForDrawioLabel(String(node?.label || '').trim() || `Шаг ${i + 1}`));
+        const geom = clone.querySelector('mxGeometry');
+        if (geom) {
+          geom.setAttribute('x', String(Math.round(baseGeom.x + stepDx * i)));
+          geom.setAttribute('y', String(Math.round(baseGeom.y)));
+        }
+        root.appendChild(clone);
+      }
+    }
+
+    // Move product and end label to follow the last step
+    const lastStepIndex = flowNodes.length - 1;
+    const lastStepX = baseGeom ? baseGeom.x + stepDx * lastStepIndex : null;
+    const baseProductGeom = getCellGeometry(doc, 'N9eBfpktY8xSMP5imMae-33');
+    const baseEndGeom = getCellGeometry(doc, 'N9eBfpktY8xSMP5imMae-27');
+    const baseLineTarget = getCellGeometry(doc, baseStepId);
+
+    if (lastStepX !== null && baseProductGeom && baseEndGeom) {
+      const baseLastStepGeom = getCellGeometry(doc, beadSlots[beadSlots.length - 1]);
+      const productOffset = baseLastStepGeom ? baseProductGeom.x - baseLastStepGeom.x : 180;
+      const endOffset = baseLastStepGeom ? baseEndGeom.x - baseLastStepGeom.x : 270;
+      const newProductX = lastStepX + productOffset;
+      const newEndX = lastStepX + endOffset;
+      setCellGeometry(doc, 'N9eBfpktY8xSMP5imMae-33', { ...baseProductGeom, x: newProductX });
+      setEdgeTargetPoint(doc, 'N9eBfpktY8xSMP5imMae-24', { x: newProductX + 25, y: baseProductGeom.y + 40 });
+      const target = getEdgeTargetPoint(doc, 'N9eBfpktY8xSMP5imMae-24');
+      const endX = target ? target.x - baseEndGeom.width / 2 : newEndX;
+      setCellGeometry(doc, 'N9eBfpktY8xSMP5imMae-27', { ...baseEndGeom, x: endX });
+
+      const consumerIds = [
+        'N9eBfpktY8xSMP5imMae-35',
+        'N9eBfpktY8xSMP5imMae-37',
+        'N9eBfpktY8xSMP5imMae-38',
+        'N9eBfpktY8xSMP5imMae-39',
+        'N9eBfpktY8xSMP5imMae-41',
+        'N9eBfpktY8xSMP5imMae-42',
+        'N9eBfpktY8xSMP5imMae-43',
+        'N9eBfpktY8xSMP5imMae-45',
+        'N9eBfpktY8xSMP5imMae-46',
+        'N9eBfpktY8xSMP5imMae-47',
+      ];
+      const baseProductX = baseProductGeom.x;
+      const dx = newProductX - baseProductX;
+      if (dx !== 0) {
+        for (const id of consumerIds) {
+          const g = getCellGeometry(doc, id);
+          if (!g) continue;
+          setCellGeometry(doc, id, { ...g, x: g.x + dx });
+        }
+      }
+
+      const model = doc.querySelector('mxGraphModel');
+      if (model) {
+        const pageWidth = Math.max(1200, newEndX + 260);
+        model.setAttribute('pageWidth', String(Math.round(pageWidth)));
+        model.setAttribute('dx', String(Math.round(pageWidth)));
+      }
+    }
   }
 
   const xml = new XMLSerializer().serializeToString(doc);

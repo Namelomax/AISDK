@@ -39,6 +39,42 @@ function clip(s: string, max = 2400) {
   return `${t.slice(0, max)}…`;
 }
 
+function extractStepsFromText(textRaw: string) {
+  const text = String(textRaw || '');
+  const matches = Array.from(text.matchAll(/Шаг\s*(\d+)\.?\s*([^\n\r]+)/gi));
+  if (!matches.length) return [] as Array<{ id: string; label: string; details: string }>;
+
+  const results: Array<{ id: string; label: string; details: string }> = [];
+
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const start = m.index ?? 0;
+    const end = i + 1 < matches.length ? matches[i + 1].index ?? text.length : text.length;
+    const block = text.slice(start, end);
+    const label = String(m[2] || '').trim() || `Шаг ${m[1]}`;
+
+    const descMatch = block.match(/Описание:\s*([\s\S]*?)(?:\n\s*Участники:|\n\s*Продукт|$)/i);
+    const participantsMatch = block.match(/Участники:\s*([\s\S]*?)(?:\n\s*Продукт|$)/i);
+    const productMatch = block.match(/Продукт(?:\s*шага)?:\s*([\s\S]*?)(?:\n\s*Шаг\s*\d+|$)/i);
+
+    const description = normalize(descMatch?.[1]) || 'не найдено';
+    const participants = normalize(participantsMatch?.[1]) || 'не найдено';
+    const product = normalize(productMatch?.[1]) || 'не найдено';
+
+    const details = [
+      `Описание: ${clip(description, 1200)}`,
+      `Участники: ${clip(participants, 800)}`,
+      'Должность: не найдено',
+      'ФИО: не найдено',
+      `Продукт: ${clip(product, 800)}`,
+    ].join('\n');
+
+    results.push({ id: `S${i + 1}`, label, details });
+  }
+
+  return results;
+}
+
 function heuristicPatchFromText(textRaw: string): Partial<ProcessDiagramState> {
   const text = String(textRaw || '').replace(/\r\n?/g, '\n').trim();
   const t = text.toLowerCase();
@@ -301,6 +337,18 @@ function normalizeGraph(patch: Partial<ProcessDiagramState>): Partial<ProcessDia
   } as Partial<ProcessDiagramState>;
 }
 
+function sanitizePatch(patch: Partial<ProcessDiagramState>): Partial<ProcessDiagramState> {
+  if ((patch as any)?.consumers && !Array.isArray(patch.consumers)) {
+    const raw = String((patch as any).consumers || '').trim();
+    if (raw) {
+      patch.consumers = raw.split(/\s*,\s*|\s*;\s*/g).filter(Boolean);
+    } else {
+      delete (patch as any).consumers;
+    }
+  }
+  return patch;
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const messagesRaw = Array.isArray(body.messages) ? body.messages : [];
@@ -313,6 +361,7 @@ export async function POST(req: Request) {
 
   const lastUser = [...msgs].reverse().find((m: any) => m.role === 'user');
   const lastUserText = lastUser?.content || '';
+  const stepNodes = extractStepsFromText(lastUserText);
 
   if (!lastUserText.trim()) {
     return new Response(JSON.stringify({ success: true, state: mergeState(prevState, {}) }), {
@@ -323,6 +372,13 @@ export async function POST(req: Request) {
 
   // Heuristic baseline patch from the last user message.
   const heuristic = heuristicPatchFromText(lastUserText);
+  if (stepNodes.length) {
+    heuristic.graph = {
+      layout: 'template-v1',
+      nodes: stepNodes,
+      edges: stepNodes.slice(1).map((n, i) => ({ from: stepNodes[i].id, to: n.id })),
+    };
+  }
 
   try {
     const { object: rawPatch } = await generateObject({
@@ -339,7 +395,15 @@ export async function POST(req: Request) {
 - Извлечь только факты о процессе (организация, владелец, цель, продукт, потребители, границы)
 - ПО ВОЗМОЖНОСТИ сформировать схему процесса в виде графа (nodes/edges) по содержанию диалога
 - Делай дополнения «рядом» с шагом: добавляй details к существующему узлу, а не новые узлы
-- У каждого узла ДОЛЖНО быть details (1–2 предложения). Если данных мало — сформулируй краткое описание по контексту.
+- У каждого узла ДОЛЖНО быть details. Формат details СТРОГО:
+  Описание: <2–4 предложения>
+  Участники: <перечень ролей/людей>
+  Должность: <роль/должность ответственного>
+  ФИО: <ФИО если есть, иначе "не найдено">
+  Продукт: <что получается на выходе>
+  (каждая строка с новой строки)
+  Если данных нет — укажи «не найдено» явно, не оставляй пустым.
+- Если пользователь перечислил шаги по номерам или списком — включи ВСЕ шаги (не сокращай), порядок сохранить.
 - Если что-то поменялось — корректируй существующие узлы (label/details/edges), можно пересобрать граф целиком
 - Всегда ставь graph.layout = "template-v1"
 - Вернуть ТОЛЬКО JSON-патч, который ДОПОЛНЯЕТ состояние (не стирай поля без причины)
@@ -381,7 +445,14 @@ ${msgs
 Верни только валидный JSON.`,
     });
 
-    const patch = normalizeGraph(rawPatch as Partial<ProcessDiagramState>);
+    const patch = sanitizePatch(normalizeGraph(rawPatch as Partial<ProcessDiagramState>));
+    if (stepNodes.length && (!patch.graph?.nodes || patch.graph.nodes.length < stepNodes.length)) {
+      patch.graph = {
+        layout: 'template-v1',
+        nodes: stepNodes,
+        edges: stepNodes.slice(1).map((n, i) => ({ from: stepNodes[i].id, to: n.id })),
+      };
+    }
     // Merge: heuristic baseline first, then model patch (model can override).
     const merged = mergeState(mergeState(prevState, heuristic), patch);
     return new Response(JSON.stringify({ success: true, state: merged }), {

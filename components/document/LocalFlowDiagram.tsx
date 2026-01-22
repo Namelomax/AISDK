@@ -59,7 +59,9 @@ function clamp(n: number, min: number, max: number) {
 }
 
 function decodeHtmlToText(input: string) {
-  const s = String(input || '');
+  const s = String(input || '')
+    .replace(/&amp;lt;br\s*\/?&amp;gt;/gi, '\n')
+    .replace(/&lt;br\s*\/?&gt;/gi, '\n');
   if (!s) return '';
   // draw.io values often contain <br/> and entities.
   const withBreaks = s.replace(/<br\s*\/?>/gi, '\n');
@@ -72,8 +74,20 @@ function decodeHtmlToText(input: string) {
 }
 
 function wrapTextLines(text: string, maxChars: number) {
-  const rawLines = String(text || '').split(/\r\n?|\n/g);
+  const normalized = String(text || '').replace(/\\n|\/\/n/g, '\n');
+  const rawLines = normalized.split(/\r\n?|\n/g);
   const lines: string[] = [];
+  const minChars = 6;
+  const clampChars = (n: number) => Math.max(minChars, n);
+
+  const pushChunkedWord = (word: string, limit: number) => {
+    let remaining = word;
+    while (remaining.length > limit) {
+      lines.push(remaining.slice(0, limit));
+      remaining = remaining.slice(limit);
+    }
+    return remaining;
+  };
 
   for (const raw of rawLines) {
     const t = raw.trim();
@@ -84,16 +98,30 @@ function wrapTextLines(text: string, maxChars: number) {
 
     const words = t.split(/\s+/g);
     let current = '';
+    const limit = clampChars(maxChars);
+
     for (const w of words) {
       if (!current) {
-        current = w;
+        if (w.length > limit) {
+          const rest = pushChunkedWord(w, limit);
+          current = rest;
+        } else {
+          current = w;
+        }
         continue;
       }
-      if ((current + ' ' + w).length <= maxChars) {
+
+      if ((current + ' ' + w).length <= limit) {
         current += ' ' + w;
       } else {
         lines.push(current);
-        current = w;
+        current = '';
+        if (w.length > limit) {
+          const rest = pushChunkedWord(w, limit);
+          current = rest;
+        } else {
+          current = w;
+        }
       }
     }
     if (current) lines.push(current);
@@ -102,6 +130,136 @@ function wrapTextLines(text: string, maxChars: number) {
   // Trim trailing empty lines
   while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop();
   return lines;
+}
+
+function wrapTextLinesCone(text: string, maxChars: number, step: number) {
+  const normalized = String(text || '').replace(/\\n|\/\/n/g, '\n');
+  const rawLines = normalized.split(/\r\n?|\n/g);
+  const lines: string[] = [];
+  const minChars = 6;
+  let lineIndex = 0;
+
+  const getMaxChars = () => Math.max(minChars, maxChars - step * lineIndex);
+
+  const pushChunkedWord = (word: string) => {
+    let remaining = word;
+    while (remaining.length > 0) {
+      const limit = getMaxChars();
+      if (remaining.length <= limit) return remaining;
+      lines.push(remaining.slice(0, limit));
+      remaining = remaining.slice(limit);
+      lineIndex += 1;
+    }
+    return '';
+  };
+
+  for (const raw of rawLines) {
+    const t = raw.trim();
+    if (!t) {
+      lines.push('');
+      lineIndex += 1;
+      continue;
+    }
+
+    const words = t.split(/\s+/g);
+    let current = '';
+    for (const w of words) {
+      const limit = getMaxChars();
+      if (!current) {
+        if (w.length > limit) {
+          const rest = pushChunkedWord(w);
+          current = rest;
+        } else {
+          current = w;
+        }
+        continue;
+      }
+      if ((current + ' ' + w).length <= limit) {
+        current += ' ' + w;
+      } else {
+        lines.push(current);
+        lineIndex += 1;
+        current = '';
+        if (w.length > limit) {
+          const rest = pushChunkedWord(w);
+          current = rest;
+        } else {
+          current = w;
+        }
+      }
+    }
+    if (current) {
+      lines.push(current);
+      lineIndex += 1;
+    }
+  }
+
+  while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop();
+  return lines;
+}
+
+type StepDetails = {
+  description: string;
+  participants: string;
+  participantsList: Array<{ role: string; name: string; raw: string }>;
+  role: string;
+  name: string;
+  product: string;
+};
+
+function parseParticipantsList(input: string) {
+  const raw = String(input || '').trim();
+  if (!raw) return [] as Array<{ role: string; name: string; raw: string }>;
+  const parts = raw.split(/\s*;\s*|\s*\n\s*|\s*\|\s*/g).filter(Boolean);
+  const list = parts.length ? parts : raw.split(/\s*,\s*/g).filter(Boolean);
+  return list.map((item) => {
+    const seg = item.trim();
+    const split = seg.split(/\s*[—-]\s*/g);
+    if (split.length >= 2) {
+      return { role: split[0].trim(), name: split.slice(1).join(' - ').trim(), raw: seg };
+    }
+    return { role: '', name: seg, raw: seg };
+  });
+}
+
+function parseStepDetails(input: string): StepDetails {
+  const raw = decodeHtmlToText(input || '').trim();
+  if (!raw) {
+    return { description: '', participants: '', participantsList: [], role: '', name: '', product: '' };
+  }
+
+  const lines = raw.split(/\r\n?|\n/g).map((l) => l.trim()).filter(Boolean);
+  let descriptionParts: string[] = [];
+  let participants = '';
+  let role = '';
+  let name = '';
+  let product = '';
+
+  const extractValue = (lineText: string) => lineText.replace(/^[^:\-—]+[:\-—]\s*/g, '').trim();
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (lower.startsWith('участники') || lower.startsWith('участник')) {
+      participants = extractValue(line);
+      continue;
+    }
+    if (lower.startsWith('должность') || lower.startsWith('роль') || lower.startsWith('role') || lower.startsWith('position')) {
+      role = extractValue(line);
+      continue;
+    }
+    if (lower.startsWith('фио') || lower.startsWith('имя') || lower.startsWith('name')) {
+      name = extractValue(line);
+      continue;
+    }
+    if (lower.startsWith('продукт') || lower.startsWith('результат') || lower.startsWith('output')) {
+      product = extractValue(line);
+      continue;
+    }
+    descriptionParts.push(line);
+  }
+
+  const description = descriptionParts.join(' ').trim() || raw;
+  const participantsList = parseParticipantsList(participants);
+  return { description, participants, participantsList, role, name, product };
 }
 
 function parseMxfileXml(xml: string): { vertices: Vertex[]; edges: Edge[]; bounds: { minX: number; minY: number; maxX: number; maxY: number } } {
@@ -364,6 +522,51 @@ function getFontSize(style: string, fallback = 12) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function isHiddenVertex(v: Vertex) {
+  const m = parseStyle(v.style);
+  const opacityRaw = m.get('opacity');
+  const opacity = opacityRaw ? Number(opacityRaw) : 1;
+  if (Number.isFinite(opacity) && opacity <= 0) return true;
+  return m.get('hidden') === '1' || m.has('hidden');
+}
+
+function fitTextInBox(text: string, width: number, height: number, baseFontSize: number) {
+  const minFontSize = 6;
+  let fontSize = Math.max(minFontSize, Math.round(baseFontSize));
+  let lineHeight = Math.max(4, Math.round(fontSize * 1.2));
+  let maxChars = Math.max(6, Math.floor(width / Math.max(1, fontSize * 0.4)));
+  let lines = wrapTextLines(text, maxChars);
+
+  const fits = () => {
+    const maxLines = Math.max(1, Math.floor(height / lineHeight));
+    return lines.length <= maxLines;
+  };
+
+  while (!fits() && fontSize > minFontSize) {
+    fontSize = Math.max(minFontSize, fontSize - 1);
+    lineHeight = Math.max(4, Math.round(fontSize * 1.2));
+    maxChars = Math.max(6, Math.floor(width / Math.max(1, fontSize * 0.6)));
+    lines = wrapTextLines(text, maxChars);
+  }
+
+  const maxLines = Math.max(1, Math.floor(height / lineHeight));
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    const last = lines[lines.length - 1] || '';
+    lines[lines.length - 1] = last.length > 1 ? `${last.slice(0, -1)}…` : `${last}…`;
+  }
+
+  return { lines, fontSize, lineHeight };
+}
+
+function isStepNodeId(id: string) {
+  const upper = id.toUpperCase();
+  return (
+    upper.startsWith('STEP_') ||
+    ['N9EBFPKTY8XSMP5IMMAE-28', 'N9EBFPKTY8XSMP5IMMAE-29', 'N9EBFPKTY8XSMP5IMMAE-30', 'N9EBFPKTY8XSMP5IMMAE-31'].includes(upper)
+  );
+}
+
 function fitRectToAspect(rect: { x: number; y: number; width: number; height: number }, aspect: number) {
   const w = Math.max(1, rect.width);
   const h = Math.max(1, rect.height);
@@ -383,6 +586,15 @@ function fitRectToAspect(rect: { x: number; y: number; width: number; height: nu
     return { x: rect.x, y: rect.y - pad, width: w, height: newH };
   }
   return rect;
+}
+
+function scaleRectAroundCenter(rect: { x: number; y: number; width: number; height: number }, factor: number) {
+  const f = Math.max(0.05, factor);
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const w = rect.width * f;
+  const h = rect.height * f;
+  return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
 function getCenter(v: Vertex) {
@@ -478,6 +690,7 @@ export function LocalFlowDiagram({
   activeNodeDetails,
   onDismissDetails,
 }: LocalFlowDiagramProps) {
+  const DIAGRAM_SCALE = 10;
   const [copied, setCopied] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -486,6 +699,8 @@ export function LocalFlowDiagram({
 
   const [camera, setCamera] = useState<CameraViewBox>({ x: 0, y: 0, w: 800, h: 600 });
   const hasUserTransformRef = useRef(false);
+  const cameraAnimRef = useRef<number | null>(null);
+  const zoomedStepRef = useRef<string | null>(null);
   const dragState = useRef<{
     active: boolean;
     mode: 'pan' | 'node' | 'group' | null;
@@ -511,8 +726,32 @@ export function LocalFlowDiagram({
 
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 200;
+  const DEFAULT_FIT_ZOOM = 0.75;
+  const VIEWBOX_MIN = 60;
+  const VIEWBOX_MAX = 200000;
 
-  const parsed = useMemo(() => parseMxfileXml(xml), [xml]);
+  const parsed = useMemo(() => {
+    const base = parseMxfileXml(xml);
+    const scale = DIAGRAM_SCALE;
+    const vertices = base.vertices.map((v) => ({
+      ...v,
+      x: v.x * scale,
+      y: v.y * scale,
+      width: v.width * scale,
+      height: v.height * scale,
+    }));
+    const edges = base.edges.map((e) => ({
+      ...e,
+      sourcePoint: e.sourcePoint
+        ? { x: e.sourcePoint.x * scale, y: e.sourcePoint.y * scale }
+        : null,
+      targetPoint: e.targetPoint
+        ? { x: e.targetPoint.x * scale, y: e.targetPoint.y * scale }
+        : null,
+    }));
+    const bounds = computeBounds(vertices);
+    return { vertices, edges, bounds } as DiagramModel;
+  }, [xml]);
 
   const [model, setModel] = useState<DiagramModel>(parsed);
   const baseBoundsRef = useRef(parsed.bounds);
@@ -547,7 +786,15 @@ export function LocalFlowDiagram({
 
   const worldVertices = useMemo(() => buildWorldVertices(model.vertices), [model.vertices]);
 
-  const visibleVertices = useMemo(() => worldVertices.filter((v) => !isDetailFrame(v)), [worldVertices]);
+  const visibleVertices = useMemo(
+    () =>
+      worldVertices.filter((v) => {
+        if (isDetailFrame(v) || isHiddenVertex(v)) return false;
+        if (isStepNodeId(v.id) && !decodeHtmlToText(v.value || '').trim()) return false;
+        return true;
+      }),
+    [worldVertices]
+  );
 
   const worldVerticesById = useMemo(() => {
     const m = new Map<string, Vertex>();
@@ -561,6 +808,34 @@ export function LocalFlowDiagram({
     return m;
   }, [visibleVertices]);
 
+
+  const animateCameraTo = (next: CameraViewBox, duration = 260) => {
+    if (cameraAnimRef.current) {
+      cancelAnimationFrame(cameraAnimRef.current);
+      cameraAnimRef.current = null;
+    }
+
+    const start = { ...camera };
+    const startTime = performance.now();
+
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const x = start.x + (next.x - start.x) * eased;
+      const y = start.y + (next.y - start.y) * eased;
+      const w = start.w + (next.w - start.w) * eased;
+      const h = start.h + (next.h - start.h) * eased;
+      setCamera({ x, y, w, h });
+
+      if (t < 1) {
+        cameraAnimRef.current = requestAnimationFrame(tick);
+      } else {
+        cameraAnimRef.current = null;
+      }
+    };
+
+    cameraAnimRef.current = requestAnimationFrame(tick);
+  };
 
   const resetView = () => {
     const container = containerRef.current;
@@ -578,7 +853,8 @@ export function LocalFlowDiagram({
       height: contentViewBox.h + margin * 2,
     };
     const fitted = fitRectToAspect(base, aspect);
-    setCamera({ x: fitted.x, y: fitted.y, w: fitted.width, h: fitted.height });
+    const scaled = scaleRectAroundCenter(fitted, DEFAULT_FIT_ZOOM);
+    animateCameraTo({ x: scaled.x, y: scaled.y, w: scaled.width, h: scaled.height });
   };
 
   const screenToWorld = (clientX: number, clientY: number) => {
@@ -609,7 +885,7 @@ export function LocalFlowDiagram({
     };
   };
 
-  const zoomToWorldRect = (rect: { x: number; y: number; width: number; height: number }) => {
+  const zoomToWorldRect = (rect: { x: number; y: number; width: number; height: number }, extraZoom = 1) => {
     const container = containerRef.current;
     if (!container) return;
     const cr = container.getBoundingClientRect();
@@ -617,7 +893,7 @@ export function LocalFlowDiagram({
     const ch = Math.max(1, cr.height);
     const aspect = cw / ch;
 
-    const margin = 40;
+    const margin = 24;
     const base = {
       x: rect.x - margin,
       y: rect.y - margin,
@@ -625,15 +901,17 @@ export function LocalFlowDiagram({
       height: rect.height + margin * 2,
     };
     const fitted = fitRectToAspect(base, aspect);
+    const scaled = extraZoom !== 1 ? scaleRectAroundCenter(fitted, extraZoom) : fitted;
     hasUserTransformRef.current = true;
-    setCamera({ x: fitted.x, y: fitted.y, w: fitted.width, h: fitted.height });
+    animateCameraTo({ x: scaled.x, y: scaled.y, w: scaled.width, h: scaled.height });
   };
 
   const zoomToNode = (nodeId: string) => {
     const base = worldVerticesById.get(nodeId);
     if (!base) return;
     const rect = { x: base.x, y: base.y, width: base.width, height: base.height };
-    zoomToWorldRect(rect);
+    const extraZoom = isStepNodeId(nodeId) ? 0.5 : 0.9;
+    zoomToWorldRect(rect, extraZoom);
   };
 
   useEffect(() => {
@@ -674,8 +952,8 @@ export function LocalFlowDiagram({
 
       // Zoom in/out by scaling the viewBox.
       const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-      const nextW = clamp(camera.w * zoomFactor, 60, 20000);
-      const nextH = clamp(camera.h * zoomFactor, 60, 20000);
+      const nextW = clamp(camera.w * zoomFactor, VIEWBOX_MIN, VIEWBOX_MAX);
+      const nextH = clamp(camera.h * zoomFactor, VIEWBOX_MIN, VIEWBOX_MAX);
 
       const nextX = wx - (px / cw) * nextW;
       const nextY = wy - (py / ch) * nextH;
@@ -884,12 +1162,26 @@ export function LocalFlowDiagram({
     const id = (nodeEl?.getAttribute('data-node-id') || '').trim();
     if (!id) {
       hasUserTransformRef.current = false;
+      zoomedStepRef.current = null;
       resetView();
       return;
     }
     const baseId = id;
     if (/^GROUP_/i.test(baseId)) return;
     if (isDetailFrame(worldVerticesById.get(baseId) as Vertex)) return;
+    if (isStepNodeId(baseId)) {
+      const base = worldVerticesById.get(baseId);
+      if (!base) return;
+      const rect = { x: base.x, y: base.y, width: base.width, height: base.height };
+      if (zoomedStepRef.current === baseId) {
+        zoomToWorldRect(rect, 1.45);
+        zoomedStepRef.current = null;
+      } else {
+        zoomToWorldRect(rect, 0.5);
+        zoomedStepRef.current = baseId;
+      }
+      return;
+    }
     zoomToNode(baseId);
   };
 
@@ -991,7 +1283,7 @@ export function LocalFlowDiagram({
         onContextMenu={(e) => e.preventDefault()}
         style={{ touchAction: 'none', cursor: isDragging ? 'grabbing' : 'default' }}
       >
-        {activeNodeId && activeNodeDetails ? (() => {
+        {activeNodeId && activeNodeDetails && !isStepNodeId(activeNodeId) ? (() => {
           const v = worldVerticesById.get(activeNodeId);
           if (!v) return null;
           const screen = worldToScreen(v.x + v.width, v.y);
@@ -1005,8 +1297,8 @@ export function LocalFlowDiagram({
 
           return (
             <div
-              className="absolute z-20 w-[280px] rounded-md border bg-background p-3 text-sm shadow-md"
-              style={{ left, top }}
+              className="absolute z-20 w-[280px] rounded-md border bg-background p-3 text-sm shadow-md transition-all duration-200"
+              style={{ left, top, opacity: 1, transform: 'translateY(0)' }}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="text-sm font-semibold">{activeNodeDetails.title}</div>
@@ -1060,7 +1352,7 @@ export function LocalFlowDiagram({
                   x2={points.x2}
                   y2={points.y2}
                   stroke="var(--muted-foreground)"
-                  strokeWidth={1.5}
+                  strokeWidth={30}
                   markerEnd="url(#arrow)"
                   opacity={0.8}
                 />
@@ -1075,20 +1367,48 @@ export function LocalFlowDiagram({
               const group = isGroupVertex(v);
               const ownerIcon = hasOwnerIcon(v);
               const text = decodeHtmlToText(v.value);
-              const maxChars = Math.max(12, Math.floor(v.width / 7));
+              const maxChars = Math.max(15, Math.floor(v.width / 7));
               const lines = wrapTextLines(text, maxChars);
-              const fontSize = getFontSize(v.style, 12);
-              const lineHeight = Math.max(12, Math.round(fontSize * 1.2));
+              const baseFontSize = getFontSize(v.style, 12) * DIAGRAM_SCALE;
+              const lineHeight = Math.max(4, Math.round(baseFontSize * 1.2));
               const spacingLeft = getSpacingLeft(v.style);
+
+              const isStep = isStepNodeId(v.id);
+              const isActiveStep = Boolean(activeNodeId && v.id === activeNodeId && isStep && activeNodeDetails?.body);
+              const stepDetail = isActiveStep ? parseStepDetails(activeNodeDetails?.body || '') : null;
+              const detailLines = isActiveStep ? wrapTextLines(activeNodeDetails?.body || '', maxChars) : [];
+              const stepFit = isStep
+                ? fitTextInBox(text, v.width - 8, v.height - 12, baseFontSize * 0.85)
+                : null;
+              const labelLines = isStep
+                ? stepFit?.lines || lines
+                : isActiveStep
+                  ? wrapTextLines(text, maxChars)
+                  : lines;
+              const fontSize = isStep ? stepFit?.fontSize || baseFontSize : baseFontSize;
+              const computedLineHeight = isStep ? stepFit?.lineHeight || lineHeight : lineHeight;
 
               const labelPaddingX = 10 + (ownerIcon ? Math.max(22, spacingLeft) : 0);
               const labelPaddingY = 14;
 
-              const useTopLeftLabel = group || kind !== 'ellipse';
-              const textX = useTopLeftLabel ? v.x + labelPaddingX : v.x + v.width / 2;
-              const textY = useTopLeftLabel
-                ? v.y + labelPaddingY
-                : v.y + v.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+              const forceCenterLabel = isStep && kind === 'ellipse';
+              const useTopLeftLabel = group || kind !== 'ellipse' || (isActiveStep && !isStep);
+              const stepTitleOffset = forceCenterLabel && isActiveStep ? -v.height * 0.22 : 0;
+              const stepTitleScale = forceCenterLabel && isActiveStep ? 0.22 : 1;
+              const textX = forceCenterLabel ? v.x + v.width / 2 : useTopLeftLabel ? v.x + labelPaddingX : v.x + v.width / 2;
+              const textY = forceCenterLabel
+                ? v.y + v.height / 2 - ((labelLines.length - 1) * computedLineHeight) / 2 + stepTitleOffset
+                : useTopLeftLabel
+                  ? v.y + labelPaddingY
+                  : v.y + v.height / 2 - ((labelLines.length - 1) * computedLineHeight) / 2;
+              const effectiveFontSize = Math.max(6, Math.round(fontSize * stepTitleScale));
+              const effectiveLineHeight = forceCenterLabel && isActiveStep
+                ? Math.max(4, Math.round(computedLineHeight * stepTitleScale))
+                : computedLineHeight;
+
+              const maxDetailLines = isActiveStep && !isStep
+                ? Math.max(0, Math.floor((v.height - labelPaddingY - labelLines.length * computedLineHeight - 10) / computedLineHeight))
+                : 0;
 
                 return (
                 <g
@@ -1146,40 +1466,40 @@ export function LocalFlowDiagram({
                         cy={v.y + Math.min(16, v.height * 0.25)}
                         r={Math.min(v.width, v.height) * 0.18}
                         fill="none"
-                        stroke="var(--border)"
-                        strokeWidth={1.5}
+                        stroke="var(--foreground)"
+                        strokeWidth={2.25}
                       />
                       <line
                         x1={v.x + v.width / 2}
                         y1={v.y + v.height * 0.35}
                         x2={v.x + v.width / 2}
                         y2={v.y + v.height * 0.75}
-                        stroke="var(--border)"
-                        strokeWidth={1.5}
+                        stroke="var(--foreground)"
+                        strokeWidth={2.25}
                       />
                       <line
                         x1={v.x + v.width * 0.2}
                         y1={v.y + v.height * 0.5}
                         x2={v.x + v.width * 0.8}
                         y2={v.y + v.height * 0.5}
-                        stroke="var(--border)"
-                        strokeWidth={1.5}
+                        stroke="var(--foreground)"
+                        strokeWidth={2.25}
                       />
                       <line
                         x1={v.x + v.width / 2}
                         y1={v.y + v.height * 0.75}
                         x2={v.x + v.width * 0.25}
                         y2={v.y + v.height * 0.95}
-                        stroke="var(--border)"
-                        strokeWidth={1.5}
+                        stroke="var(--foreground)"
+                        strokeWidth={2.25}
                       />
                       <line
                         x1={v.x + v.width / 2}
                         y1={v.y + v.height * 0.75}
                         x2={v.x + v.width * 0.75}
                         y2={v.y + v.height * 0.95}
-                        stroke="var(--border)"
-                        strokeWidth={1.5}
+                        stroke="var(--foreground)"
+                        strokeWidth={2.25}
                       />
                     </g>
                   ) : null}
@@ -1239,17 +1559,212 @@ export function LocalFlowDiagram({
                   <text
                     x={textX}
                     y={textY}
-                    textAnchor={useTopLeftLabel ? 'start' : 'middle'}
-                    dominantBaseline={useTopLeftLabel ? 'text-before-edge' : 'middle'}
-                    fontSize={fontSize}
+                    textAnchor={forceCenterLabel ? 'middle' : useTopLeftLabel ? 'start' : 'middle'}
+                    dominantBaseline={forceCenterLabel ? 'middle' : useTopLeftLabel ? 'text-before-edge' : 'middle'}
+                    fontSize={effectiveFontSize}
                     fill="var(--card-foreground)"
                   >
-                    {lines.map((ln, i) => (
-                      <tspan key={i} x={textX} y={textY + i * lineHeight}>
+                    {labelLines.map((ln, i) => (
+                      <tspan key={i} x={textX} y={textY + i * effectiveLineHeight}>
                         {ln}
                       </tspan>
                     ))}
                   </text>
+
+                  {isActiveStep && maxDetailLines > 0 ? (
+                    <text
+                      x={v.x + labelPaddingX}
+                      y={v.y + labelPaddingY + labelLines.length * computedLineHeight + 6}
+                      textAnchor="start"
+                      dominantBaseline="text-before-edge"
+                      fontSize={Math.max(8, Math.round(fontSize * 0.2))}
+                      fill="var(--muted-foreground)"
+                    >
+                      {detailLines.slice(0, maxDetailLines).map((ln, i) => (
+                        <tspan key={i} x={v.x + labelPaddingX} y={v.y + labelPaddingY + labelLines.length * computedLineHeight + 6 + i * computedLineHeight}>
+                          {ln}
+                        </tspan>
+                      ))}
+                    </text>
+                  ) : null}
+
+                  {isActiveStep && stepDetail ? (() => {
+                    const detailScale = 0.25;
+                    const stepW = v.width;
+                    const stepH = v.height-100;
+                    const pad = Math.max(10, Math.round(stepW * 0.01));
+
+                    const descW = Math.max(80, Math.round(stepW * 2.5));
+                    const descX = v.x + stepW / 2 - descW / 2;
+                    const descY = v.y + stepH + pad / 2;
+                    const descFont = Math.max(10, Math.round(fontSize * 0.38));
+                    const descLineH = Math.max(13, Math.round(descFont * 1.25));
+                    const descBaseChars = Math.max(8, Math.floor(descW / Math.max(1, descFont * 0.6)));
+                    const descLines = wrapTextLines(stepDetail.description || 'Описание шага', descBaseChars);
+
+                    const participantsText = stepDetail.participants || 'Участники не найдены в диалоге';
+                    const roleText = stepDetail.role || (stepDetail.participants ? 'Должность' : 'Должность не найдена');
+                    const nameText = stepDetail.name || (stepDetail.participants ? 'ФИО' : 'ФИО не найдено');
+                    const roleFont = Math.max(10, Math.round(fontSize * 0.22));
+                    const roleLineH = Math.max(12, Math.round(roleFont * 1.2));
+
+                    const participantItems = stepDetail.participantsList.length
+                      ? stepDetail.participantsList
+                      : [{ role: roleText, name: nameText, raw: `${roleText} ${nameText}` }];
+                    const maxParticipants = Math.min(4, participantItems.length);
+                    const itemW = Math.max(70, Math.round(stepW * 0.3));
+                    const itemH = Math.max(60, Math.round(stepH * 0.24));
+                    const itemGap = Math.max(8, Math.round(itemW * 0.12));
+                    const totalW = maxParticipants * itemW + (maxParticipants - 1) * itemGap;
+                    const peopleX = v.x + stepW / 2 - totalW / 2;
+                    const peopleY = v.y - pad - itemH - roleLineH * 0.6;
+                    const peopleLabelY = peopleY - roleLineH * 1.1;
+
+                    const prodW = Math.max(70, Math.round(stepW * 0.3));
+                    const prodH = Math.max(60, Math.round(stepH * 0.26));
+                    const prodX = v.x + stepW + pad;
+                    const prodY = v.y + stepH * 0.65;
+                    const productText = stepDetail.product || 'Продукт процесса не обнаружен';
+                    const prodTextW = Math.max(120, Math.round(stepW * 1.4));
+                    const prodTextX = prodX + prodW + pad;
+                    const prodTextY = prodY - Math.round(prodH * 0.2);
+                    const prodFont = Math.max(10, Math.round(fontSize * 0.22));
+                    const prodLineH = Math.max(12, Math.round(prodFont * 1.25));
+                    const prodLines = wrapTextLines(productText, Math.max(14, Math.floor(prodTextW / 8)));
+
+                    const headR = Math.min(itemW, itemH) * 0.18;
+                    const headCyOffset = itemH * 0.32;
+                    const bodyTopOffset = itemH * 0.42;
+                    const bodyBottomOffset = itemH * 0.8;
+                    const armYOffset = itemH * 0.56;
+
+                    const cubeOx = prodW * 0.25;
+                    const cubeOy = prodH * 0.18;
+                    const cubeX = prodX + cubeOx;
+                    const cubeY = prodY + cubeOy;
+                    const cubeW = prodW - cubeOx;
+                    const cubeH = prodH - cubeOy;
+                    const pTop = `${cubeX},${cubeY} ${cubeX + cubeOx},${cubeY - cubeOy} ${cubeX + cubeW + cubeOx},${cubeY - cubeOy} ${cubeX + cubeW},${cubeY}`;
+                    const pSide = `${cubeX + cubeW},${cubeY} ${cubeX + cubeW + cubeOx},${cubeY - cubeOy} ${cubeX + cubeW + cubeOx},${cubeY + cubeH - cubeOy} ${cubeX + cubeW},${cubeY + cubeH}`;
+                    const pFront = `${cubeX},${cubeY} ${cubeX + cubeW},${cubeY} ${cubeX + cubeW},${cubeY + cubeH} ${cubeX},${cubeY + cubeH}`;
+
+                    const cx = v.x + stepW / 2;
+                    const cy = v.y + stepH / 2;
+
+                    return (
+                      <g transform={`translate(${cx} ${cy}) scale(${detailScale}) translate(${-cx} ${-cy})`}>
+                        <text
+                          x={v.x + stepW / 2}
+                          y={peopleLabelY}
+                          textAnchor="middle"
+                          dominantBaseline="text-before-edge"
+                          fontSize={roleFont}
+                          fill="var(--muted-foreground)"
+                        >
+                          Участники
+                        </text>
+
+                        {participantItems.slice(0, maxParticipants).map((p, idx) => {
+                          const baseX = peopleX + idx * (itemW + itemGap);
+                          const baseY = peopleY;
+                          const cxItem = baseX + itemW / 2;
+                          const cyItem = baseY + itemH / 2;
+                          const headCy = baseY + headCyOffset;
+                          const bodyTop = baseY + bodyTopOffset;
+                          const bodyBottom = baseY + bodyBottomOffset;
+                          const armY = baseY + armYOffset;
+                          return (
+                            <g key={`${p.raw}-${idx}`}>
+                              <ellipse
+                                cx={cxItem}
+                                cy={cyItem}
+                                rx={itemW / 2}
+                                ry={itemH / 2}
+                                fill="var(--card)"
+                                stroke="var(--border)"
+                                strokeWidth={1.5}
+                                opacity={0.9}
+                              />
+                              <circle cx={cxItem} cy={headCy} r={headR} fill="none" stroke="var(--foreground)" strokeWidth={2} />
+                              <line x1={cxItem} y1={bodyTop} x2={cxItem} y2={bodyBottom} stroke="var(--foreground)" strokeWidth={2} />
+                              <line x1={cxItem - headR * 2} y1={armY} x2={cxItem + headR * 2} y2={armY} stroke="var(--foreground)" strokeWidth={2} />
+                              <line
+                                x1={cxItem}
+                                y1={bodyBottom}
+                                x2={cxItem - headR * 1.6}
+                                y2={bodyBottom + headR * 2}
+                                stroke="var(--foreground)"
+                                strokeWidth={2}
+                              />
+                              <line
+                                x1={cxItem}
+                                y1={bodyBottom}
+                                x2={cxItem + headR * 1.6}
+                                y2={bodyBottom + headR * 2}
+                                stroke="var(--foreground)"
+                                strokeWidth={2}
+                              />
+                              {(p.role || p.name) ? (
+                                <text
+                                  x={cxItem}
+                                  y={baseY + itemH + roleLineH * 0.2}
+                                  textAnchor="middle"
+                                  dominantBaseline="text-before-edge"
+                                  fontSize={roleFont}
+                                  fill="var(--muted-foreground)"
+                                >
+                                  {p.role ? <tspan x={cxItem} y={baseY + itemH + roleLineH * 0.2}>{p.role}</tspan> : null}
+                                  {p.name ? <tspan x={cxItem} y={baseY + itemH + roleLineH * 1.2}>{p.name}</tspan> : null}
+                                </text>
+                              ) : null}
+                            </g>
+                          );
+                        })}
+
+                        {descLines.length ? (
+                          <text
+                            x={descX + descW / 2}
+                            y={descY - descLineH}
+                            textAnchor="middle"
+                            dominantBaseline="text-before-edge"
+                            fontSize={descFont}
+                            fill="var(--muted-foreground)"
+                          >
+                            <tspan x={descX + descW / 2} y={descY - descLineH}>Описание процесса</tspan>
+                            {descLines.map((ln, i) => (
+                              <tspan key={i} x={descX + descW / 2} y={descY + i * descLineH}>
+                                {ln}
+                              </tspan>
+                            ))}
+                          </text>
+                        ) : null}
+
+                        <g>
+                          <polygon points={pTop} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                          <polygon points={pSide} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                          <polygon points={pFront} fill="var(--card)" stroke="var(--border)" strokeWidth={1.5} />
+                        </g>
+
+                        {prodLines.length ? (
+                          <text
+                            x={prodTextX}
+                            y={prodTextY - prodLineH}
+                            textAnchor="start"
+                            dominantBaseline="text-before-edge"
+                            fontSize={prodFont}
+                            fill="var(--muted-foreground)"
+                          >
+                            <tspan x={prodTextX} y={prodTextY - prodLineH}>Продукт процесса</tspan>
+                            {prodLines.map((ln, i) => (
+                              <tspan key={i} x={prodTextX} y={prodTextY + i * prodLineH}>
+                                {ln}
+                              </tspan>
+                            ))}
+                          </text>
+                        ) : null}
+                      </g>
+                    );
+                  })() : null}
                 </g>
               );
             })}
