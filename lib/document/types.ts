@@ -12,6 +12,8 @@ export type ProcessDiagramState = {
   goal?: string | null;
   product?: string | null;
   productDescription?: string | null;
+  productRequirements?: string | null;
+  productArtifacts?: string | null;
   consumers?: Array<
     | string
     | {

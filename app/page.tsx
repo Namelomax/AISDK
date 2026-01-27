@@ -40,6 +40,7 @@ export default function ChatPage() {
     isStreaming: false,
   });
   const [diagramState, setDiagramState] = useState<ProcessDiagramState | null>(null);
+  const [diagramSteps, setDiagramSteps] = useState<any[]>([]);
   const lastDiagramUserMessageIdRef = useRef<string | null>(null);
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
@@ -389,8 +390,12 @@ export default function ChatPage() {
         });
         const j = await resp.json().catch(() => ({}));
         if (j?.success && j?.state) {
-          if (viewConversationId === requestConvId) setDiagramState(j.state);
-          else localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify(j.state));
+          if (viewConversationId === requestConvId) {
+            setDiagramState(j.state);
+            if (Array.isArray(j.steps)) setDiagramSteps(j.steps);
+          } else {
+            localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify({ state: j.state, steps: j.steps || [] }));
+          }
         }
       } catch (e) {
         console.warn('Failed to update diagram state (queued)', e);
@@ -404,15 +409,29 @@ export default function ChatPage() {
   useEffect(() => {
     if (!viewConversationId) {
       setDiagramState(null);
+      setDiagramSteps([]);
       lastDiagramUserMessageIdRef.current = null;
       return;
     }
     try {
       const raw = localStorage.getItem(`diagramState:${viewConversationId}`);
-      if (raw) setDiagramState(JSON.parse(raw));
-      else setDiagramState(null);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Handle both old format (just state) and new format ({ state, steps })
+        if (parsed?.state) {
+          setDiagramState(parsed.state);
+          setDiagramSteps(Array.isArray(parsed.steps) ? parsed.steps : []);
+        } else {
+          setDiagramState(parsed);
+          setDiagramSteps([]);
+        }
+      } else {
+        setDiagramState(null);
+        setDiagramSteps([]);
+      }
     } catch {
       setDiagramState(null);
+      setDiagramSteps([]);
     }
     lastDiagramUserMessageIdRef.current = null;
   }, [viewConversationId]);
@@ -422,11 +441,11 @@ export default function ChatPage() {
     if (!viewConversationId) return;
     try {
       if (!diagramState) localStorage.removeItem(`diagramState:${viewConversationId}`);
-      else localStorage.setItem(`diagramState:${viewConversationId}`, JSON.stringify(diagramState));
+      else localStorage.setItem(`diagramState:${viewConversationId}`, JSON.stringify({ state: diagramState, steps: diagramSteps }));
     } catch {
       // ignore
     }
-  }, [diagramState, viewConversationId]);
+  }, [diagramState, diagramSteps, viewConversationId]);
 
   // NOTE: Removed duplicate useEffect for diagram updates.
   // handleUserMessageQueued callback already handles /api/diagram calls.
@@ -988,7 +1007,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} />
+        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} diagramSteps={diagramSteps} isLoading={displayStatus !== 'ready'} />
       </div>
     </div>
   );

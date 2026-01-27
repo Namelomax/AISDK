@@ -227,6 +227,15 @@ ${conversationContext.map((msg, i) => {
       cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
     }
 
+    console.log('📝 Cleaned JSON for parsing:', cleanJson.substring(0, 200));
+
+    // If cleanJson is empty or doesn't contain braces, fallback immediately
+    if (!cleanJson || cleanJson.length < 5 || firstBrace === -1) {
+      console.warn('⚠️ Empty or invalid classifier response, falling back to chat');
+      if (looksLikeExplicitDocumentCommand(lastUserText)) return 'document';
+      return 'chat';
+    }
+
     let intentObj: { type: IntentType; confidence: number; reasoning: string };
     try {
       intentObj = JSON.parse(cleanJson);

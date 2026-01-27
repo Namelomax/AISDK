@@ -22,7 +22,7 @@ const openrouter = createOpenRouter({
 
 // Включаем reasoning у модели по умолчанию: OpenRouter прокидывает этот флаг дальше в модель
 // (для mimo-v2-flash reasoning заявлен в capabilities). budget_tokens можно отрегулировать при необходимости.
-const model = openrouter.chat('z-ai/glm-4.5-air:free');
+const model = openrouter.chat('tngtech/deepseek-r1t-chimera:free');
 
 let cachedPrompt: string | null = null;
 
@@ -137,33 +137,15 @@ async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   }
 }
 
-async function extractWithTextract(att: any, extHint?: string): Promise<string | null> {
-  const buf = dataUrlToBuffer(att?.url || att?.data);
-  if (!buf) return null;
+async function extractLegacyDoc(buf: Buffer): Promise<string | null> {
   try {
-    // Optional dependency: keep API route working even when textract isn't installed.
-    // Use eval('require') so Next doesn't try to resolve the module at build time.
-    const textract = (() => {
-      try {
-        // eslint-disable-next-line no-eval
-        const req = eval('require');
-        return req('textract');
-      } catch {
-        return null;
-      }
-    })();
-    if (!textract) return null;
-    const ext = extHint || guessFileExt(att);
-    const text = await new Promise<string>((resolve, reject) => {
-      textract.fromBufferWithMime(att.mediaType || att.mimeType || '', buf, { typeOverride: ext } as any, (err: any, res: string) => {
-        if (err) return reject(err);
-        resolve(res || '');
-      });
-    });
-    const cleaned = (text || '').trim();
-    return cleaned || null;
+    const WordExtractor = (await import('word-extractor')).default;
+    const extractor = new WordExtractor();
+    const doc = await extractor.extract(buf);
+    const text = doc.getBody()?.trim();
+    return text || null;
   } catch (error) {
-    console.error('textract parse failed:', error);
+    console.error('word-extractor parse failed:', error);
     return null;
   }
 }
@@ -174,30 +156,31 @@ async function extractDocText(att: any): Promise<string | null> {
   const buf = dataUrlToBuffer(att?.url || att?.data);
   if (!buf) return null;
 
-      if (isDocx) {
-        try {
-          const mammoth = await import('mammoth');
-          const result = await mammoth.extractRawText({ buffer: buf });
-          const cleaned = result.value.trim();
-          if (cleaned) return cleaned;
-        } catch (error) {
-          console.error('Failed to parse DOCX via mammoth:', error);
-        }
-      }
+  if (isDocx) {
+    try {
+      const mammoth = await import('mammoth');
+      const result = await mammoth.extractRawText({ buffer: buf });
+      const cleaned = result.value.trim();
+      if (cleaned) return cleaned;
+    } catch (error) {
+      console.error('Failed to parse DOCX via mammoth:', error);
+    }
+  }
 
-  // Legacy DOC: try textract, then best-effort binary text
-  const extracted = await extractWithTextract(att, isDocx ? 'docx' : 'doc');
+  // Legacy DOC: use word-extractor, then best-effort binary text
+  const extracted = await extractLegacyDoc(buf);
   if (extracted?.trim()) return extracted.trim();
   return bestEffortBinaryText(buf);
 }
 
 async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
   // Поддерживаем XLSX и старые XLS (application/vnd.ms-excel)
-  if (!att || (att.mediaType !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && att.mediaType !== 'application/vnd.ms-excel')) return extractWithTextract(att, 'xls');
+  if (!att) return null;
   const buf = dataUrlToBuffer(att.url || att.data);
   if (!buf) return null;
   try {
     const XLSX = await import('xlsx');
+    // xlsx library supports both .xlsx and legacy .xls formats
     const workbook = XLSX.read(buf, { type: 'buffer' });
     let text = '';
     workbook.SheetNames.forEach(sheetName => {
@@ -209,9 +192,9 @@ async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
     const cleaned = text.trim();
     if (cleaned) return cleaned;
   } catch (error) {
-    console.error('Failed to parse XLSX attachment:', error);
+    console.error('Failed to parse Excel attachment:', error);
   }
-  return extractWithTextract(att, 'xls');
+  return bestEffortBinaryText(buf);
 }
 
 async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
@@ -253,9 +236,7 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
     }
   }
 
-  const extracted = await extractWithTextract(att, isPpt ? 'ppt' : 'pptx');
-  if (extracted?.trim()) return extracted.trim();
-  // Legacy PPT often needs external tools; fall back to best-effort readable runs.
+  // Legacy PPT: best-effort binary text extraction
   return bestEffortBinaryText(buf);
 }
 

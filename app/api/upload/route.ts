@@ -40,28 +40,15 @@ function bestEffortBinaryText(buf: Buffer): string | null {
   return cleaned.length >= 40 ? cleaned : null;
 }
 
-async function extractWithTextract(buf: Buffer, mimeType: string, extHint: string): Promise<string | null> {
+async function extractLegacyDoc(buf: Buffer): Promise<string | null> {
   try {
-    const textract = (() => {
-      try {
-        // eslint-disable-next-line no-eval
-        const req = eval('require');
-        return req('textract');
-      } catch {
-        return null;
-      }
-    })();
-    if (!textract) return null;
-    const text = await new Promise<string>((resolve, reject) => {
-      textract.fromBufferWithMime(mimeType || '', buf, { typeOverride: extHint } as any, (err: any, res: string) => {
-        if (err) return reject(err);
-        resolve(res || '');
-      });
-    });
-    const cleaned = (text || '').trim();
-    return cleaned || null;
-  } catch (err) {
-    console.error('textract upload parse failed:', err);
+    const WordExtractor = (await import('word-extractor')).default;
+    const extractor = new WordExtractor();
+    const doc = await extractor.extract(buf);
+    const text = doc.getBody()?.trim();
+    return text || null;
+  } catch (error) {
+    console.error('word-extractor parse failed:', error);
     return null;
   }
 }
@@ -93,6 +80,7 @@ export async function POST(req: Request) {
     } else if (file.name.endsWith('.xls') || file.name.endsWith('.xlsx') || contentType === 'application/vnd.ms-excel' || contentType.includes('spreadsheetml')) {
       try {
         const XLSX = await import('xlsx');
+        // xlsx library supports both .xlsx and legacy .xls formats
         const workbook = XLSX.read(buffer, { type: 'buffer' });
         let text = '';
         workbook.SheetNames.forEach((sheetName: string) => {
@@ -103,17 +91,15 @@ export async function POST(req: Request) {
         });
         extractedText = text.trim() || null;
       } catch (err) {
-        extractedText = null;
-      }
-      if (!extractedText) {
-        extractedText = await extractWithTextract(buffer, contentType, file.name.endsWith('.xls') ? 'xls' : 'xlsx');
+        console.error('Failed to parse Excel file:', err);
+        extractedText = bestEffortBinaryText(buffer);
       }
     } else if (file.name.endsWith('.doc') || contentType === 'application/msword') {
-      extractedText = await extractWithTextract(buffer, contentType, 'doc');
+      extractedText = await extractLegacyDoc(buffer);
       if (!extractedText) extractedText = bestEffortBinaryText(buffer);
     } else if (file.name.endsWith('.ppt') || file.name.endsWith('.pptx') || contentType === 'application/vnd.ms-powerpoint' || contentType.includes('presentationml')) {
-      extractedText = await extractWithTextract(buffer, contentType, file.name.endsWith('.ppt') ? 'ppt' : 'pptx');
-      if (!extractedText) extractedText = bestEffortBinaryText(buffer);
+      // For PPTX we could use JSZip similar to chat/route.ts, for now fallback to binary
+      extractedText = bestEffortBinaryText(buffer);
     }
   } catch (err) {
     console.error('Local text extraction failed:', err);

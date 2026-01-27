@@ -17,7 +17,7 @@ const openrouter = createOpenRouter({
   },
 });
 
-const model = openrouter.chat('z-ai/glm-4.5-air:free');
+const model = openrouter.chat('tngtech/deepseek-r1t2-chimera:free');
 
 function toText(msg: any): string {
   if (!msg) return '';
@@ -54,9 +54,9 @@ function extractDrawioXmlFromText(textRaw: string) {
 function extractStepsFromText(textRaw: string) {
   const text = String(textRaw || '');
   const matches = Array.from(text.matchAll(/Шаг\s*(\d+)\.?\s*([^\n\r]+)/gi));
-  if (!matches.length) return [] as Array<{ id: string; label: string; details: string; participants: string }>;
+  if (!matches.length) return [] as Array<{ id: string; label: string; description: string; participants: string; role: string; product: string }>;
 
-  const results: Array<{ id: string; label: string; details: string; participants: string }> = [];
+  const results: Array<{ id: string; label: string; description: string; participants: string; role: string; product: string }> = [];
 
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i];
@@ -69,40 +69,88 @@ function extractStepsFromText(textRaw: string) {
     block = block.replace(/Потребители\s*продукта\s*:[\s\S]*/i, '');
     block = block.replace(/Документы\/артефакты\s*:[\s\S]*/i, '');
 
-    const descMatch = block.match(/Описание:\s*([\s\S]*?)(?:\n\s*Участники:|\n\s*Должность:|\n\s*Ответственный:|\n\s*Продукт|$)/i);
-    const participantsMatch = block.match(/Участники:\s*([\s\S]*?)(?:\n\s*Должность:|\n\s*Ответственный:|\n\s*Продукт|$)/i);
+    const descMatch = block.match(/Описание:\s*([\s\S]*?)(?:\n\s*Участники:|\n\s*Должность:|\n\s*Ответственный:|\n\s*Продукт|\n\s*Действи|$)/i);
+    const participantsMatch = block.match(/Участники:\s*([\s\S]*?)(?:\n\s*Должность:|\n\s*Ответственный:|\n\s*Продукт|\n\s*Действи|$)/i);
     const roleMatch = block.match(/Должность:\s*([\s\S]*?)(?:\n\s*ФИО:|\n\s*Продукт|$)/i);
-    const productMatch = block.match(/Продукт(?:\s*шага)?:\s*([\s\S]*?)(?:\n\s*Шаг\s*\d+|\n\s*Потребители|$)/i);
+    
+    // Продукт шага - только до конца строки или до начала действий участников
+    // Ищем паттерн "Продукт шага:" и берём только одну-две строки
+    const productMatch = block.match(/Продукт(?:\s*шага)?:\s*([^\n]+(?:\n(?![а-яА-Яa-zA-Z]+\s+(?:проверяет|составляет|координирует|утверждает|готовит|создаёт|формирует|согласует|отвечает))[^\n]*)*)/i);
+    
     const responsibleMatch = block.match(/Ответственный:\s*([\s\S]*?)(?:\n|$)/i);
     const createsMatch = block.match(/Созда[её]т:\s*([\s\S]*?)(?:\n|$)/i);
     const actionMatch = block.match(/Действи[ея]:\s*([\s\S]*?)(?:\n\s*Продукт|$)/i);
 
     const description = normalize(descMatch?.[1]) || '';
-    const participants = normalize(participantsMatch?.[1]) || normalize(responsibleMatch?.[1]) || '';
+    let participantsRaw = normalize(participantsMatch?.[1]) || normalize(responsibleMatch?.[1]) || '';
     const role = normalize(roleMatch?.[1]) || '';
-    const product = normalize(productMatch?.[1]) || normalize(createsMatch?.[1]) || '';
+    let product = normalize(productMatch?.[1]) || normalize(createsMatch?.[1]) || '';
     const action = normalize(actionMatch?.[1]) || '';
 
-    // Формируем строку участников с их действиями для отображения над шагом
-    let participantsInfo = participants;
-    if (action && participants) {
-      participantsInfo = `${participants}\n(${action})`;
+    // Парсим действия участников в свободной форме
+    // Ищем паттерны типа "директор проверяет...", "координатор согласует..."
+    const freeFormActions = block.match(/\n\s*([а-яА-Яa-zA-Z\s\(\)\.]+?)\s+(проверяет|составляет|координирует|утверждает|готовит|создаёт|формирует|согласует|отвечает|разрабатывает|настраивает|обеспечивает|организует|контролирует|ведёт|подготавливает)\s+([^\n]+)/gi);
+    
+    const participantActions: Array<{ name: string; action: string }> = [];
+    
+    // Сначала парсим из скобок в списке участников
+    if (participantsRaw) {
+      const parts = participantsRaw.split(/[,;]/).map(p => p.trim()).filter(Boolean);
+      for (const p of parts) {
+        const match = p.match(/^(.+?)\s*\((.+?)\)\s*$/);
+        if (match) {
+          participantActions.push({ name: match[1].trim(), action: match[2].trim() });
+        } else {
+          participantActions.push({ name: p, action: '' });
+        }
+      }
+    }
+    
+    // Затем парсим свободную форму действий
+    if (freeFormActions) {
+      for (const fa of freeFormActions) {
+        const match = fa.match(/\n?\s*([а-яА-Яa-zA-Z\s\(\)\.]+?)\s+(проверяет|составляет|координирует|утверждает|готовит|создаёт|формирует|согласует|отвечает|разрабатывает|настраивает|обеспечивает|организует|контролирует|ведёт|подготавливает)\s+([^\n]+)/i);
+        if (match) {
+          const personName = match[1].trim();
+          const actionVerb = match[2].trim();
+          const actionObject = match[3].trim();
+          const fullAction = `${actionVerb} ${actionObject}`;
+          
+          // Ищем участника по имени и добавляем действие
+          const existing = participantActions.find(pa => 
+            personName.toLowerCase().includes(pa.name.toLowerCase().split(' ')[0]) ||
+            pa.name.toLowerCase().includes(personName.toLowerCase().split(' ')[0])
+          );
+          if (existing && !existing.action) {
+            existing.action = fullAction;
+          } else if (!existing) {
+            participantActions.push({ name: personName, action: fullAction });
+          }
+        }
+      }
+    }
+    
+    // Если есть общее действие и участники без индивидуальных действий
+    if (action) {
+      for (const pa of participantActions) {
+        if (!pa.action) {
+          pa.action = action;
+        }
+      }
     }
 
-    // Собираем детали - включаем ВСЕ поля для parseStepDetails в LocalFlowDiagram
-    const detailParts: string[] = [];
-    if (description) detailParts.push(`Описание: ${clip(description, 1200)}`);
-    if (participants) detailParts.push(`Участники: ${clip(participants, 800)}`);
-    if (role) detailParts.push(`Должность: ${clip(role, 200)}`);
-    if (product) detailParts.push(`Продукт: ${clip(product, 800)}`);
-    
-    const details = detailParts.join('\n') || `Шаг ${i + 1}`;
+    // Формируем строку участников с их действиями
+    const participants = participantActions.length > 0
+      ? participantActions.map(pa => pa.action ? `${pa.name} (${pa.action})` : pa.name).join(', ')
+      : participantsRaw;
 
     results.push({ 
       id: `S${i + 1}`, 
       label, 
-      details,
-      participants: participantsInfo
+      description,
+      participants,
+      role,
+      product
     });
   }
 
@@ -210,6 +258,18 @@ function heuristicPatchFromText(textRaw: string): Partial<ProcessDiagramState> {
   {
      const desc = grabKey('Описание продукта');
      if (desc) patch.productDescription = desc;
+  }
+
+  // Product Requirements
+  {
+     const reqs = grabKey('Требования к продукту') || grabKey('Требования');
+     if (reqs) patch.productRequirements = reqs;
+  }
+
+  // Product Artifacts
+  {
+     const artifacts = grabKey('Документы продукта') || grabKey('Артефакты') || grabKey('Выходные документы');
+     if (artifacts) patch.productArtifacts = artifacts;
   }
 
   // Boundaries
@@ -704,6 +764,14 @@ ${msgs
           clean = clean.substring(first, last + 1);
         }
         
+        console.log('📝 Diagram clean JSON (first 300 chars):', clean.substring(0, 300));
+        
+        // Try to fix common JSON issues
+        clean = clean
+          .replace(/,\s*}/g, '}')  // Remove trailing commas before }
+          .replace(/,\s*]/g, ']')  // Remove trailing commas before ]
+          .replace(/([\{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'); // Quote unquoted keys
+        
         rawPatch = JSON.parse(clean);
     } catch (e) {
         console.warn('Failed to parse diagram patch, using empty object', e);
@@ -721,19 +789,13 @@ ${msgs
     }
     // Merge: heuristic baseline first, then model patch (model can override).
     const merged = mergeState(mergeState(prevState, heuristic), patch);
-    
-    console.log('Merged State Org:', merged.organization);
 
     if (merged.rawDrawioXml) {
-      console.log('Applying text to XML...');
-      const before = merged.rawDrawioXml.length;
       merged.rawDrawioXml = applyTextToDrawioXml(merged.rawDrawioXml, merged, stepNodes);
-      console.log('XML Updated. Length change:', before, '->', merged.rawDrawioXml.length);
-    } else {
-        console.log('No rawDrawioXml to patch!');
     }
 
-    return new Response(JSON.stringify({ success: true, state: merged }), {
+    // Include steps for ReactFlow rendering
+    return new Response(JSON.stringify({ success: true, state: merged, steps: stepNodes }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -746,7 +808,8 @@ ${msgs
       merged.rawDrawioXml = applyTextToDrawioXml(merged.rawDrawioXml, merged, stepNodes);
     }
 
-    return new Response(JSON.stringify({ success: true, state: merged }), {
+    // Include steps for ReactFlow rendering
+    return new Response(JSON.stringify({ success: true, state: merged, steps: stepNodes }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

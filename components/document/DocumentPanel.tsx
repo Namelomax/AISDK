@@ -18,6 +18,7 @@ import remarkBreaks from 'remark-breaks';
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import { LocalFlowDiagram } from '@/components/document/LocalFlowDiagram';
+import { ProcessFlowDiagram } from '@/components/diagram';
 import type { Attachment, DocumentState, ProcessDiagramState } from '@/lib/document/types';
 import { extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
 import { buildDrawioXmlFromState } from '@/lib/document/drawio';
@@ -30,6 +31,8 @@ type DocumentPanelProps = {
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
   diagramState?: ProcessDiagramState | null;
+  diagramSteps?: any[];
+  isLoading?: boolean;
 };
 
 function getFileExt(name: string) {
@@ -97,7 +100,7 @@ function isImageAttachment(att: Attachment) {
   );
 }
 
-export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramState }: DocumentPanelProps) => {
+export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramState, diagramSteps, isLoading }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
@@ -505,22 +508,33 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
           </div>
         ) : (
           <>
-            <div className={viewMode === 'diagram' ? '' : 'hidden'}>
-              {drawioXml ? (
-                <LocalFlowDiagram
-                  className="w-full h-[60vh]"
-                  xml={drawioXml}
-                  ariaLabel="Схема документа"
-                  activeNodeId={selectedDiagramNodeId}
-                  activeNodeDetails={selectedDetails}
-                  onDismissDetails={() => setSelectedDiagramNodeId(null)}
-                  onNodeClick={(nodeId) => {
-                    setSelectedDiagramNodeId(nodeId);
-                  }}
-                />
+            <div className={viewMode === 'diagram' ? 'w-full h-[80vh] relative' : 'hidden'}>
+              {diagramState ? (
+                <>
+                  <ProcessFlowDiagram
+                    className="w-full h-full"
+                    state={diagramState}
+                    steps={diagramSteps || []}
+                  />
+                  {isLoading && (
+                    <div className="absolute top-3 right-3 flex items-center gap-2 bg-background/90 backdrop-blur-sm border rounded-full px-3 py-1.5 shadow-sm z-10">
+                      <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                      <span className="text-xs text-muted-foreground">Обновление схемы...</span>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="rounded-md border bg-muted/20 p-4 text-sm text-muted-foreground">
-                  Недостаточно данных для схемы. Продолжайте диалог — схема заполняется из фактов чата.
+                <div className="flex items-center justify-center h-full min-h-[200px]">
+                  {isLoading ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+                      <span className="text-sm text-muted-foreground">Формирование схемы...</span>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border bg-muted/20 p-4 text-sm text-muted-foreground">
+                      Недостаточно данных для схемы. Продолжайте диалог — схема заполняется из фактов чата.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
