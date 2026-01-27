@@ -1,4 +1,4 @@
-import { generateObject } from 'ai';
+import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import type { AgentContext } from './types';
 
@@ -151,17 +151,15 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
   }
 
   try {
-    const { object: intentObj } = await generateObject({
+    // We use generateText instead of generateObject to be more robust with Free/Reasoning models
+    // that might output <think> blocks or fail strict JSON schema modes.
+    const { text: rawOutput } = await generateText({
       model,
       temperature: 0.1,
-      schema: z.object({
-        type: z.enum(['chat', 'document']),
-        confidence: z.number().min(0).max(1),
-        reasoning: z.string(),
-      }),
       prompt: `Ты классификатор намерений в системе создания регламентов бизнес-процессов.
 
-    Отвечай ТОЛЬКО валидным JSON без Markdown, без комментариев и без тройных кавычек. Формат: {"type":"chat|document","confidence":0-1,"reasoning":"..."}
+    Отвечай ТОЛЬКО валидным JSON без Markdown, без блоков кода, без комментариев. 
+    Формат: {"type":"chat|document","confidence":0.0-1.0,"reasoning":"..."}
 
 ТВОЯ ЗАДАЧА: определить, хочет ли пользователь СЕЙЧАС получить сформированный документ, или продолжает диалог по сбору информации.
 
@@ -210,15 +208,41 @@ ${conversationContext.map((msg, i) => {
 - Если ассистент только что предложил сформировать документ и пользователь согласился - это "document"
 - Если информация еще собирается - это "chat", даже при коротких подтверждениях
 
-Проанализируй ситуацию и верни JSON с:
-- type: "chat" или "document"
-- confidence: уверенность от 0 до 1
-- reasoning: подробное объяснение твоего решения (2-3 предложения)
-
-Напомню: никаких кодовых блоков, только чистый JSON.`,
+Проанализируй ситуацию и верни JSON.`,
     });
+
+    console.log('🤖 Raw Intent Classification Output:', rawOutput);
+
+    // Clean up response for models that include thinking traces or markdown
+    let cleanJson = rawOutput
+      .replace(/<think>[\s\S]*?<\/think>/gi, '') // Remove deepseek thinking blocks
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .trim();
     
-    console.log('🤖 Intent classification:', {
+    // Find the first '{' and last '}' to handle potential preamble/postscript text
+    const firstBrace = cleanJson.indexOf('{');
+    const lastBrace = cleanJson.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+    }
+
+    let intentObj: { type: IntentType; confidence: number; reasoning: string };
+    try {
+      intentObj = JSON.parse(cleanJson);
+    } catch (parseErr) {
+      console.warn('Failed to parse intent JSON, falling back to chat.', parseErr);
+      // Fallback heuristics if specific keywords are present
+      if (looksLikeExplicitDocumentCommand(lastUserText)) return 'document';
+      return 'chat';
+    }
+    
+    // Validate type (basic)
+    if (intentObj.type !== 'chat' && intentObj.type !== 'document') {
+       intentObj.type = 'chat'; // default
+    }
+
+    console.log('🤖 Intent classification parsed:', {
       type: intentObj.type,
       confidence: intentObj.confidence,
       reasoning: intentObj.reasoning
@@ -232,7 +256,7 @@ ${conversationContext.map((msg, i) => {
       }
     }
     
-    return intentObj.type;
+    return intentObj.type as IntentType;
   } catch (err) {
     console.error('Intent classification failed:', err);
     if (looksLikeExplicitDocumentCommand(lastUserText)) return 'document';

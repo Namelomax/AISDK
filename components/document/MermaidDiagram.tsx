@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Copy, Download, Minus, Plus, RefreshCcw } from 'lucide-react';
+import { Check, Copy, Download, Expand, Minus, Plus } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -482,7 +482,7 @@ export function MermaidDiagram({ code, className, ariaLabel, enableNodeClickZoom
           aria-label="Сбросить вид"
           onClick={resetView}
         >
-          <RefreshCcw className="size-4" />
+          <Expand className="size-4" />
         </Button>
         </div>
       </div>

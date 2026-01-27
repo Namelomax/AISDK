@@ -15,11 +15,20 @@ function wrapForDrawioLabel(input: string) {
   return escapeXml(t.replace(/\r\n?|\n/g, '<br/>'));
 }
 
+function normalizeDrawioXml(xml: string) {
+  const trimmed = String(xml || '').trim();
+  if (!trimmed) return '';
+  const hasMxfile = /<mxfile[\s>]/i.test(trimmed) && /<\/mxfile>/i.test(trimmed);
+  if (!hasMxfile) return '';
+  return trimmed.startsWith('<?xml') ? trimmed : `<?xml version="1.0" encoding="UTF-8"?>\n${trimmed}`;
+}
+
 const TEMPLATE_LAYOUT_ID = 'template-v1';
 const FORCE_TEMPLATE_LAYOUT = true;
 
 // ИСПРАВЛЕННЫЙ ШАБЛОН - все элементы в видимой области 0-1200 по X, 0-900 по Y
-const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
+// Экспортируется для использования в diagram API
+export const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net" version="29.3.1">
 <diagram name="Страница-1" id="kjT4P9zYKhYp1suIgHot">
 <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" math="0" shadow="0">
@@ -41,9 +50,9 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxCell id="WUNQLDYkcmdtQOnQ86g9-4" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="" vertex="1">
 <mxGeometry height="70" width="90" x="-250" y="60" as="geometry"/>
 <mxCell id="N9eBfpktY8xSMP5imMae-7" parent="1" 
-  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
-  value="" vertex="1" resizable="0">
-<mxGeometry height="40" width="30" x="-220" y="75" as="geometry"/>
+  style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;imageAspect=0;aspect=fixed;image=/User.svg;" 
+  value="" vertex="1">
+<mxGeometry height="40" width="40" x="-225" y="70" as="geometry"/>
 </mxCell>
 <mxCell id="EDGE_OWNER_TO_POSITION" edge="1" parent="1" source="N9eBfpktY8xSMP5imMae-7" target="N9eBfpktY8xSMP5imMae-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;endSize=36;strokeWidth=20;">
 <mxGeometry relative="1" as="geometry"/>
@@ -58,12 +67,15 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxGeometry height="25" width="140" x="-120" y="90" as="geometry"/>
 </mxCell>
 
-<!-- ЦЕЛЬ (справа от владельца) -->
-<mxCell id="N9eBfpktY8xSMP5imMae-20" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=center;spacing=8;fontSize=24;fontStyle=1;" value="Цель" vertex="1">
-<mxGeometry height="60" width="90" x="920" y="0" as="geometry"/>
+<!-- ЦЕЛЬ (большая иконка с подписью сверху) -->
+<mxCell id="GOAL_LABEL" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;fontSize=14;fontStyle=1;" value="Цель" vertex="1">
+<mxGeometry height="25" width="100" x="910" y="0" as="geometry"/>
 </mxCell>
-<mxCell id="WUNQLDYkcmdtQOnQ86g9-12" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-20;" value="Описание цели" vertex="1">
-<mxGeometry height="90" width="320" x="230" y="215" as="geometry"/>
+<mxCell id="N9eBfpktY8xSMP5imMae-20" parent="1" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelPosition=center;imageAspect=0;aspect=fixed;image=/Goal.svg;" value="" vertex="1">
+<mxGeometry height="80" width="80" x="920" y="25" as="geometry"/>
+</mxCell>
+<mxCell id="WUNQLDYkcmdtQOnQ86g9-12" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;opacity=0;pointerEvents=0;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-20;" value="Описание цели" vertex="1">
+<mxGeometry height="90" width="320" x="0" y="0" as="geometry"/>
 </mxCell>
 
 <!-- СТРЕЛКА ПРОЦЕССА (горизонтальная линия с шагами) -->
@@ -79,18 +91,38 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </mxGeometry>
 </mxCell>
 
-<!-- Шаги (бусины на нитке) -->
-<mxCell id="N9eBfpktY8xSMP5imMae-28" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" value="Шаг 1" vertex="1">
-<mxGeometry height="70" width="70" x="200" y="330" as="geometry"/>
+<!-- Шаги процесса - кружочки, вся информация внутри при клике -->
+
+<!-- ШАГ 1 -->
+<mxCell id="N9eBfpktY8xSMP5imMae-28" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="Шаг 1" vertex="1">
+<mxGeometry height="60" width="60" x="190" y="335" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-29" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" value="Шаг 2" vertex="1">
-<mxGeometry height="70" width="70" x="380" y="330" as="geometry"/>
+<mxCell id="STEP1_DETAILS" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;opacity=0;pointerEvents=0;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-28;" value="Описание шага 1" vertex="1">
+<mxGeometry height="100" width="200" x="0" y="0" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-30" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" value="Шаг 3" vertex="1">
-<mxGeometry height="70" width="70" x="560" y="330" as="geometry"/>
+
+<!-- ШАГ 2 -->
+<mxCell id="N9eBfpktY8xSMP5imMae-29" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="Шаг 2" vertex="1">
+<mxGeometry height="60" width="60" x="370" y="335" as="geometry"/>
 </mxCell>
-<mxCell id="N9eBfpktY8xSMP5imMae-31" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" value="Шаг 4" vertex="1">
-<mxGeometry height="70" width="70" x="740" y="330" as="geometry"/>
+<mxCell id="STEP2_DETAILS" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;opacity=0;pointerEvents=0;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-29;" value="Описание шага 2" vertex="1">
+<mxGeometry height="100" width="200" x="0" y="0" as="geometry"/>
+</mxCell>
+
+<!-- ШАГ 3 -->
+<mxCell id="N9eBfpktY8xSMP5imMae-30" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="Шаг 3" vertex="1">
+<mxGeometry height="60" width="60" x="550" y="335" as="geometry"/>
+</mxCell>
+<mxCell id="STEP3_DETAILS" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;opacity=0;pointerEvents=0;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-30;" value="Описание шага 3" vertex="1">
+<mxGeometry height="100" width="200" x="0" y="0" as="geometry"/>
+</mxCell>
+
+<!-- ШАГ 4 -->
+<mxCell id="N9eBfpktY8xSMP5imMae-31" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="Шаг 4" vertex="1">
+<mxGeometry height="60" width="60" x="730" y="335" as="geometry"/>
+</mxCell>
+<mxCell id="STEP4_DETAILS" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;opacity=0;pointerEvents=0;detailFrame=1;detailFor=N9eBfpktY8xSMP5imMae-31;" value="Описание шага 4" vertex="1">
+<mxGeometry height="100" width="200" x="0" y="0" as="geometry"/>
 </mxCell>
 
 <!-- ПРОДУКТ -->
@@ -112,9 +144,9 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxGeometry height="120" width="180" x="1150" y="120" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-38" parent="1" 
-  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
-  value="" vertex="1" resizable="0">
-<mxGeometry height="40" width="40" x="1220" y="165" as="geometry"/>
+  style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;imageAspect=0;aspect=fixed;image=/User.svg;" 
+  value="" vertex="1">
+<mxGeometry height="40" width="40" x="1220" y="160" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-39" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 1" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="85" as="geometry"/>
@@ -125,9 +157,9 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxGeometry height="120" width="180" x="1150" y="280" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-42" parent="1" 
-  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
-  value="" vertex="1" resizable="0">
-<mxGeometry height="50" width="40" x="1220" y="315" as="geometry"/>
+  style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;imageAspect=0;aspect=fixed;image=/User.svg;" 
+  value="" vertex="1">
+<mxGeometry height="45" width="45" x="1218" y="310" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-43" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 2" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="245" as="geometry"/>
@@ -138,9 +170,9 @@ const TEMPLATE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <mxGeometry height="120" width="180" x="1150" y="440" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-46" parent="1" 
-  style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" 
-  value="" vertex="1" resizable="0">
-<mxGeometry height="50" width="40" x="1225" y="475" as="geometry"/>
+  style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;imageAspect=0;aspect=fixed;image=/User.svg;" 
+  value="" vertex="1">
+<mxGeometry height="45" width="45" x="1218" y="470" as="geometry"/>
 </mxCell>
 <mxCell id="N9eBfpktY8xSMP5imMae-47" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;" value="Потребитель 3" vertex="1">
 <mxGeometry height="20" width="160" x="1200" y="405" as="geometry"/>
@@ -412,6 +444,9 @@ export function buildDrawioXmlFromState(
 ): string {
   const s = state || null;
   if (!s) return '';
+
+  const rawXml = normalizeDrawioXml(String((s as any).rawDrawioXml || ''));
+  if (rawXml) return rawXml;
 
   if (FORCE_TEMPLATE_LAYOUT || s.graph?.layout === TEMPLATE_LAYOUT_ID) {
     return buildTemplateXmlFromState(s, attachments);

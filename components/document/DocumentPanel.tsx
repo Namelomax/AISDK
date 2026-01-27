@@ -125,13 +125,14 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
     }
   }, [document.content, document.isStreaming]);
 
-  useEffect(() => {
-    if (userToggledView) return;
-    const hasDocContent = Boolean(document.isStreaming || document.title?.trim() || document.content?.trim());
-    if (hasDocContent && viewMode !== 'document') {
-      setViewMode('document');
-    }
-  }, [document.isStreaming, document.title, document.content, userToggledView, viewMode]);
+  // Auto-switch to document view is disabled - diagram is default
+  // useEffect(() => {
+  //   if (userToggledView) return;
+  //   const hasDocContent = Boolean(document.isStreaming || document.title?.trim() || document.content?.trim());
+  //   if (hasDocContent && viewMode !== 'document') {
+  //     setViewMode('document');
+  //   }
+  // }, [document.isStreaming, document.title, document.content, userToggledView, viewMode]);
 
   const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
 

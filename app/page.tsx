@@ -396,7 +396,9 @@ export default function ChatPage() {
         console.warn('Failed to update diagram state (queued)', e);
       }
     })();
-  }, [conversationId, viewConversationId, messages, diagramState]);
+    // NOTE: diagramState intentionally excluded to prevent re-fetch loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, viewConversationId, messages]);
 
   // Load diagram state per viewed conversation.
   useEffect(() => {
@@ -426,57 +428,8 @@ export default function ChatPage() {
     }
   }, [diagramState, viewConversationId]);
 
-  // Update diagram state after each new user message (only for active view).
-  useEffect(() => {
-    if (!conversationId || !viewConversationId) return;
-    if (conversationId !== viewConversationId) return;
-    if (!Array.isArray(messages) || messages.length === 0) return;
-
-    const lastUser = [...messages].reverse().find((m: any) => m?.role === 'user');
-    if (!lastUser) return;
-    const lastUserId = String(lastUser.id || '');
-    if (!lastUserId) return;
-    if (lastDiagramUserMessageIdRef.current === lastUserId) return;
-
-    const userText = (() => {
-      if (Array.isArray((lastUser as any).parts)) {
-        const p = (lastUser as any).parts.find((x: any) => x?.type === 'text' && typeof x.text === 'string');
-        if (p?.text) return String(p.text);
-      }
-      if (typeof (lastUser as any)?.text === 'string') return String((lastUser as any).text);
-      return '';
-    })();
-    if (!String(userText || '').trim()) return;
-
-    lastDiagramUserMessageIdRef.current = lastUserId;
-
-    const requestConvId = conversationId;
-    const slice = (messages || []).slice(-16).map((m: any) => ({
-      id: m?.id,
-      role: m?.role,
-      content: Array.isArray(m?.parts)
-        ? (m.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text || '')
-        : (typeof m?.text === 'string' ? m.text : ''),
-      parts: Array.isArray(m?.parts) ? m.parts : undefined,
-    }));
-
-    (async () => {
-      try {
-        const resp = await fetch('/api/diagram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: slice, state: diagramState }),
-        });
-        const j = await resp.json().catch(() => ({}));
-        if (j?.success && j?.state) {
-          if (viewConversationId === requestConvId) setDiagramState(j.state);
-          else localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify(j.state));
-        }
-      } catch (e) {
-        console.warn('Failed to update diagram state', e);
-      }
-    })();
-  }, [messages, conversationId, viewConversationId, diagramState]);
+  // NOTE: Removed duplicate useEffect for diagram updates.
+  // handleUserMessageQueued callback already handles /api/diagram calls.
 
   const attachedFiles = useMemo(() => {
     const collected: Array<{ id?: string; name?: string; url?: string; mediaType?: string }> = [];

@@ -5,11 +5,13 @@ export type DocumentState = {
 };
 
 export type ProcessDiagramState = {
+  rawDrawioXml?: string | null;
   organization?: { name?: string | null; activity?: string | null };
   process?: { name?: string | null; description?: string | null };
   owner?: { fullName?: string | null; position?: string | null };
   goal?: string | null;
   product?: string | null;
+  productDescription?: string | null;
   consumers?: Array<
     | string
     | {

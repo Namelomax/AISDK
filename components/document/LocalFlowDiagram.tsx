@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Copy, Download, RefreshCcw } from 'lucide-react';
+import { Check, Copy, Download, Expand } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -1267,7 +1267,7 @@ export function LocalFlowDiagram({
             resetView();
           }}
         >
-          <RefreshCcw className="size-4" />
+          <Expand className="size-4" />
         </Button>
       </div>
 
