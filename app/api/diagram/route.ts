@@ -5,7 +5,7 @@ import type { ProcessDiagramState } from '@/lib/document/types';
 import { TEMPLATE_XML } from '@/lib/document/drawio';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
