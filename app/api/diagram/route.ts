@@ -1,11 +1,12 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { generateText } from 'ai';
+import { generateObject } from 'ai';
 import { z } from 'zod';
 import type { ProcessDiagramState } from '@/lib/document/types';
 import { TEMPLATE_XML } from '@/lib/document/drawio';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 300;
 
 const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
@@ -19,6 +20,58 @@ const openrouter = createOpenRouter({
 
 const model = openrouter.chat('tngtech/deepseek-r1t2-chimera:free');
 
+// Shemes for parsing
+
+const ParticipantActionSchema = z.object({
+  name: z.string().describe('ФИО или роль участника (например: "директор (Ищенко Р.В.)", "методист")'),
+  role: z.string().optional().describe('Должность участника, если указана отдельно'),
+  action: z.string().describe('Что делает участник (например: "проверяет финальный результат", "составляет методички")'),
+});
+
+const StepNodeSchema = z.object({
+  id: z.string().describe('Уникальный ID шага (S1, S2, S3 и т.д.)'),
+  label: z.string().describe('Краткое название шага (например: "Подготовка регламента")'),
+  description: z.string().describe('Подробное описание шага (2-4 предложения)'),
+  participants: z.array(ParticipantActionSchema).describe('Участники шага с их действиями'),
+  product: z.string().describe('Продукт/результат шага (что получается на выходе)'),
+  context: z.string().optional().describe('Дополнительный контекст (например: "в связи с понижением уровня программирования")'),
+});
+
+const ProcessDiagramPatchSchema = z.object({
+  organization: z.object({
+    name: z.string().optional(),
+    activity: z.string().optional(),
+  }).optional(),
+  
+  owner: z.object({
+    fullName: z.string().optional(),
+    position: z.string().optional(),
+  }).optional(),
+  
+  process: z.object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+  }).optional(),
+  
+  goal: z.string().optional().describe('Цель процесса одной строкой'),
+  product: z.string().optional().describe('Итоговый продукт процесса'),
+  consumers: z.string().optional().describe('Потребители результата (кто использует продукт)'),
+  
+  boundaries: z.object({
+    start: z.string().optional(),
+    end: z.string().optional(),
+  }).optional(),
+  
+graph: z.object({
+  layout: z.literal('template-v1'),
+  nodes: z.array(StepNodeSchema),
+  edges: z.array(z.object({
+    from: z.string(),
+    to: z.string(),
+  })).optional().default([]),  // ← Добавили .optional().default([])
+}).optional(),
+});
+
 function toText(msg: any): string {
   if (!msg) return '';
   if (typeof msg.content === 'string') return msg.content;
@@ -29,15 +82,15 @@ function toText(msg: any): string {
   return '';
 }
 
-function normalize(s: string | null | undefined) {
-  const t = String(s ?? '').trim();
-  return t || null;
-}
-
 function clip(s: string, max = 2400) {
   const t = String(s || '').trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max)}…`;
+}
+
+function normalize(s: string | null | undefined) {
+  const t = String(s ?? '').trim();
+  return t || null;
 }
 
 function extractDrawioXmlFromText(textRaw: string) {
@@ -406,7 +459,15 @@ function mergeState(prev: ProcessDiagramState | null, patch: Partial<ProcessDiag
   }
 
   next.updatedAt = new Date().toISOString();
-  return next;
+  return {
+    ...prev,
+    ...patch,
+    organization: { ...prev?.organization, ...patch?.organization },
+    owner: { ...prev?.owner, ...patch?.owner },
+    process: { ...prev?.process, ...patch?.process },
+    boundaries: { ...prev?.boundaries, ...patch?.boundaries },
+    graph: patch?.graph || prev?.graph,
+  };
 }
 
 const PatchSchema = z
@@ -610,207 +671,227 @@ function applyTextToDrawioXml(xml: string, state: ProcessDiagramState, steps: an
   return updated;
 }
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const messagesRaw = Array.isArray(body.messages) ? body.messages : [];
-  const prevState = (body.state || null) as ProcessDiagramState | null;
+export async function POST(request: Request) {
+  const body = await request.json();
+  const { messages = [], state: prevState = {} } = body;
 
-  const msgs = messagesRaw
-    .slice(-16)
-    .map((m: any) => ({ role: m?.role, content: toText(m) }))
-    .filter((m: any) => m.role && typeof m.content === 'string' && m.content.trim());
-
-  const lastUser = [...msgs].reverse().find((m: any) => m.role === 'user');
-  const lastUserText = lastUser?.content || '';
-  const { xml: rawXml, rest: rawXmlRest } = extractDrawioXmlFromText(lastUserText);
-  const processingText = rawXml ? rawXmlRest : lastUserText;
-
-  // Проверяем версию шаблона - если в старом XML есть STEP1_GROUP или STEP1_ACTOR,
-  // значит это старая структура и нужно использовать новый шаблон
-  const prevXml = prevState?.rawDrawioXml || '';
-  const isOldStructure = prevXml.includes('STEP1_GROUP') || prevXml.includes('STEP1_ACTOR') || prevXml.includes('Actor.svg');
-  
-  // Use rawXml if found, otherwise use previous state's XML (if not old structure), otherwise use default template
-  const workingXml = rawXml || (prevXml && !isOldStructure ? prevXml : TEMPLATE_XML);
-  console.log('Working XML source:', rawXml ? 'new from message' : (prevXml && !isOldStructure) ? 'from prevState' : 'DEFAULT TEMPLATE (forced refresh)');
-  if (isOldStructure) {
-    console.log('Old template structure detected, forcing refresh to new template');
-  }
-
-  if (processingText) {
-      console.log('--- DEBUG DIAGRAM ---');
-      console.log('User Text Length:', processingText.length);
-      console.log('User Text Snippet:', processingText.slice(0, 200));
-  }
-
-  const stepNodes = extractStepsFromText(processingText);
-
-  const xmlOnly = Boolean(rawXml && String(rawXmlRest || '').trim() === '');
-  if (xmlOnly) {
-    const merged = mergeState(prevState, { rawDrawioXml: rawXml });
-    return new Response(JSON.stringify({ success: true, state: merged }), {
+  if (!messages.length) {
+    return new Response(JSON.stringify({ success: true, state: prevState }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  if (!String(processingText || '').trim()) {
-    return new Response(JSON.stringify({ success: true, state: mergeState(prevState, {}) }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
+  const msgs = messages.map((m: any) => ({ role: m.role, content: toText(m) }));
+  const lastUserText = msgs.filter((m: any) => m.role === 'user').pop()?.content || '';
 
-  // Heuristic baseline patch from the last user message.
-  const heuristic = heuristicPatchFromText(processingText);
-  
-  // Explicitly set the base XML to ensure it persists in the state merge
-  // If we found new XML, use it. If not, preserve the old one in heuristic so it's not lost if merge behavior is weird.
-  if (workingXml) {
-    heuristic.rawDrawioXml = workingXml;
-  }
-  
-  // LOG HEURISTIC RESULTS
-  console.log('Heuristic Extracted:', JSON.stringify(heuristic, null, 2));
+  // Формируем контекст для AI (последние 5 сообщений для экономии токенов)
+  const recentMessages = msgs.slice(-5).map((m: any) => {
+    const content = clip(m.content, 1000);
+    return `${m.role}: ${content}`;
+  }).join('\n\n');
 
-  // If we extracted XML from this message, apply it.
-  if (rawXml) {
-    heuristic.rawDrawioXml = rawXml;
-  }
-
-  if (stepNodes.length) {
-    heuristic.graph = {
-      layout: 'template-v1',
-      nodes: stepNodes,
-      edges: stepNodes.slice(1).map((n, i) => ({ from: stepNodes[i].id, to: n.id })),
-    };
-  }
+  console.log('🔍 Processing message:', lastUserText.slice(0, 200));
 
   try {
-    const { text: rawOutput } = await generateText({
+    // Получаем данные от AI в удобном для него формате
+    const { object: aiPatch } = await generateObject({
       model,
+      schema: ProcessDiagramPatchSchema,
       temperature: 0.1,
-      prompt: `Ты отдельный агент, который обновляет состояние схемы бизнес-процесса на основе диалога.
+      prompt: `CRITICAL: Return ONLY raw JSON. NO markdown blocks.
 
-ТЕБЕ ДАДУТ:
-1) Предыдущее состояние (JSON)
-2) Последние сообщения диалога
+You are an expert at extracting business process information from dialogues.
 
-НУЖНО:
-- Извлечь только факты о процессе (организация, владелец, цель, продукт, потребители, границы)
-- ПО ВОЗМОЖНОСТИ сформировать схему процесса в виде графа (nodes/edges) по содержанию диалога
-- Делай дополнения «рядом» с шагом: добавляй details к существующему узлу, а не новые узлы
-- У каждого узла ДОЛЖНО быть details. Формат details СТРОГО:
-  Описание: <2–4 предложения>
-  Участники: <перечень ролей/людей>
-  Должность: <роль/должность ответственного>
-  ФИО: <ФИО если есть, иначе "не найдено">
-  Продукт: <что получается на выходе>
-  (каждая строка с новой строки)
-  Если данных нет — укажи «не найдено» явно, не оставляй пустым.
-- Если пользователь перечислил шаги по номерам или списком — включи ВСЕ шаги (не сокращай), порядок сохранить.
-- Если что-то поменялось — корректируй существующие узлы (label/details/edges), можно пересобрать граф целиком
-- Всегда ставь graph.layout = "template-v1"
-- Вернуть ТОЛЬКО JSON-патч, который ДОПОЛНЯЕТ состояние (не стирай поля без причины)
-- Если в последнем сообщении нет новых фактов — верни пустой объект {}
+EXTRACTION RULES FOR STEP PARTICIPANTS:
+1. If participants listed as "Участники: директор, методист" - create separate entry for each
+2. If AFTER participant list there are lines with actions like:
+   "директор проверяет результат"
+   "методист составляет методички"
+   MATCH these actions to participants from the list
+3. Extract action from parentheses: "директор (проверяет)" → action: "проверяет"
+4. Each participant MUST have name and action. If action not specified, use empty string ""
 
-ПРЕДЫДУЩЕЕ СОСТОЯНИЕ:
-${JSON.stringify(prevState || {}, null, 2)}
+EXTRACTION RULES FOR STEP PRODUCT:
+1. Product is the RESULT of the step
+2. Do NOT include participant actions in product
+3. Product usually follows "Продукт шага:" or "Создаёт:"
 
-ПОДСКАЗКА (эвристика из последнего сообщения пользователя):
-${JSON.stringify(heuristic || {}, null, 2)}
+CRITICAL: Extract ALL steps mentioned in the message. If user lists:
+- Шаг 1. ...
+- Шаг 2. ...
+- Шаг 3. ...
+You MUST return ALL THREE steps in nodes array.
 
-ПОСЛЕДНИЕ СООБЩЕНИЯ:
-${msgs
-  .map((m: any) => {
-    const c = m.content.length > 700 ? `${m.content.slice(0, 700)}…` : m.content;
-    return `${m.role}: ${c}`;
-  })
-  .join('\n\n')}
+CURRENT STATE:
+${JSON.stringify(prevState, null, 2)}
 
-ПОДСКАЗКИ:
-- owner.fullName: ФИО владельца/ответственного
-- owner.position: должность владельца
-- organization.name/activity: название организации и чем занимается
-- process.name/description: название процесса/регламента/схемы и краткое описание
-- goal: цель процесса (одной строкой)
-- product: итоговый продукт/результат (одной строкой)
-- consumers: список потребителей результата (персона/организация/группа)
-- boundaries.start/end: старт/финиш (дата или событие/триггер)
- - graph.nodes: список узлов схемы (label + type + details), используй понятные шаги/акторы/документы
- - graph.edges: связи между узлами (from -> to), используй id узлов
+RECENT MESSAGES:
+${recentMessages}
 
-ВАЖНО:
-- Верни строго JSON (без markdown, без <think>)
-- Используй эвристику как подсказку, но можешь уточнять/исправлять
-- Если нашёл новые факты — верни их. Если фактов нет — {}
- - Если создаёшь graph, задай уникальные id (например, N1, N2, N3)
-- Старайся держать граф компактным: 5–10 ключевых узлов, остальное в details
+EXAMPLE OF CORRECT EXTRACTION:
 
-Верни только валидный JSON.`,
+Input:
+"""
+Компания: АНО ДЛО ДО «Байкальский центр»
+Процесс: Организация конкурса
+
+Шаг 1. Подготовка регламента
+Участники: директор (Ищенко Р.В.), методист
+Продукт: проект регламента
+директор (Ищенко Р.В.) проверяет результат
+методист составляет методички
+
+Шаг 2. Формирование оргкомитета
+Участники: директор, координатор
+Продукт: состав оргкомитета
+"""
+
+Correct output:
+{
+  "organization": {
+    "name": "АНО ДЛО ДО «Байкальский центр»"
+  },
+  "process": {
+    "name": "Организация конкурса"
+  },
+  "graph": {
+    "layout": "template-v1",
+    "nodes": [
+      {
+        "id": "S1",
+        "label": "Подготовка регламента",
+        "description": "...",
+        "participants": [
+          {"name": "директор (Ищенко Р.В.)", "action": "проверяет результат"},
+          {"name": "методист", "action": "составляет методички"}
+        ],
+        "product": "проект регламента"
+      },
+      {
+        "id": "S2",
+        "label": "Формирование оргкомитета",
+        "description": "...",
+        "participants": [
+          {"name": "директор", "action": ""},
+          {"name": "координатор", "action": ""}
+        ],
+        "product": "состав оргкомитета"
+      }
+    ],
+    "edges": [
+      {"from": "S1", "to": "S2"}
+    ]
+  }
+}
+
+IMPORTANT:
+- Extract ALL fields mentioned: organization, process, goal, product, consumers, boundaries
+- Extract ALL steps from the message
+- Create edges: S1→S2, S2→S3, etc.
+- Return ONLY JSON object starting with { and ending with }
+
+Extract the information:`,
     });
 
-    let rawPatch: any = {};
-    try {
-        let clean = rawOutput
-          .replace(/<think>[\s\S]*?<\/think>/gi, '') 
-          .replace(/```json/gi, '')
-          .replace(/```/g, '')
-          .trim();
+    console.log('✅ AI extracted patch:', JSON.stringify(aiPatch, null, 2));
 
-        const first = clean.indexOf('{');
-        const last = clean.lastIndexOf('}');
-        if (first !== -1 && last !== -1) {
-          clean = clean.substring(first, last + 1);
-        }
-        
-        console.log('📝 Diagram clean JSON (first 300 chars):', clean.substring(0, 300));
-        
-        // Try to fix common JSON issues
-        clean = clean
-          .replace(/,\s*}/g, '}')  // Remove trailing commas before }
-          .replace(/,\s*]/g, ']')  // Remove trailing commas before ]
-          .replace(/([\{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'); // Quote unquoted keys
-        
-        rawPatch = JSON.parse(clean);
-    } catch (e) {
-        console.warn('Failed to parse diagram patch, using empty object', e);
-        // Fallback to empty -> eventually falls back to heuristic via mergeState logic below
-        rawPatch = {};
+    // Конвертируем AI-формат в ProcessDiagramState формат
+    const patch: Partial<ProcessDiagramState> = {
+      organization: aiPatch.organization,
+      owner: aiPatch.owner,
+      process: aiPatch.process,
+      goal: aiPatch.goal,
+      product: aiPatch.product,
+      boundaries: aiPatch.boundaries,
+    };
+
+    // Конвертируем consumers: string → string[]
+    if (aiPatch.consumers) {
+      const consumersArray = aiPatch.consumers
+        .split(',')
+        .map(c => c.trim())
+        .filter(Boolean);
+      patch.consumers = consumersArray;
     }
 
-    const patch = sanitizePatch(normalizeGraph(rawPatch as Partial<ProcessDiagramState>));
-    if (stepNodes.length) {
+    // Конвертируем graph.nodes: формат AI → формат ProcessDiagramState
+    if (aiPatch.graph?.nodes) {
       patch.graph = {
         layout: 'template-v1',
-        nodes: stepNodes,
-        edges: stepNodes.slice(1).map((n, i) => ({ from: stepNodes[i].id, to: n.id })),
+        nodes: aiPatch.graph.nodes.map(aiNode => {
+          // Форматируем participants: массив объектов → строка для совместимости
+          const participantsStr = aiNode.participants
+            .map(p => p.action ? `${p.name} (${p.action})` : p.name)
+            .join(', ');
+
+          // Формируем details в строковом формате как в вашем оригинальном коде
+          const detailsParts: string[] = [];
+          
+          if (aiNode.description) {
+            detailsParts.push(`Описание: ${aiNode.description}`);
+          }
+          
+          if (participantsStr) {
+            detailsParts.push(`Участники: ${participantsStr}`);
+          }
+          
+          // Добавляем роль первого участника если есть
+          const firstRole = aiNode.participants[0]?.role;
+          if (firstRole) {
+            detailsParts.push(`Должность: ${firstRole}`);
+          }
+          
+          if (aiNode.product) {
+            detailsParts.push(`Продукт: ${aiNode.product}`);
+          }
+
+          const details = detailsParts.join('\n');
+
+          return {
+            id: aiNode.id,
+            label: aiNode.label,
+            description: aiNode.description,
+            participants: participantsStr,
+            role: firstRole || '',
+            product: aiNode.product,
+            details, // добавляем для совместимости
+          };
+        }),
+        edges: aiPatch.graph.edges,
       };
     }
-    // Merge: heuristic baseline first, then model patch (model can override).
-    const merged = mergeState(mergeState(prevState, heuristic), patch);
 
-    if (merged.rawDrawioXml) {
-      merged.rawDrawioXml = applyTextToDrawioXml(merged.rawDrawioXml, merged, stepNodes);
+    const merged = mergeState(prevState, patch);
+
+    // Применяем к DrawIO XML если нужно
+    if (merged.rawDrawioXml && patch.graph?.nodes) {
+      merged.rawDrawioXml = applyTextToDrawioXml(
+        merged.rawDrawioXml, 
+        merged, 
+        patch.graph.nodes
+      );
     }
 
-    // Include steps for ReactFlow rendering
-    return new Response(JSON.stringify({ success: true, state: merged, steps: stepNodes }), {
+    return new Response(JSON.stringify({ 
+      success: true, 
+      state: merged,
+      steps: patch.graph?.nodes || [],
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+
   } catch (e) {
-    console.error('diagram agent failed', e);
-    // Fall back to heuristic-only update so the UI still progresses.
-    const merged = mergeState(prevState, heuristic);
-
-    if (merged.rawDrawioXml) {
-      merged.rawDrawioXml = applyTextToDrawioXml(merged.rawDrawioXml, merged, stepNodes);
-    }
-
-    // Include steps for ReactFlow rendering
-    return new Response(JSON.stringify({ success: true, state: merged, steps: stepNodes }), {
-      status: 200,
+    console.error('❌ AI agent failed:', e);
+    
+    // Fallback на пустой ответ
+    return new Response(JSON.stringify({ 
+      success: false, 
+      error: String(e),
+      state: prevState,
+    }), {
+      status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
   }

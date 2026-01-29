@@ -22,7 +22,7 @@ const openrouter = createOpenRouter({
 
 // Включаем reasoning у модели по умолчанию: OpenRouter прокидывает этот флаг дальше в модель
 // (для mimo-v2-flash reasoning заявлен в capabilities). budget_tokens можно отрегулировать при необходимости.
-const model = openrouter.chat('tngtech/deepseek-r1t-chimera:free');
+const model = openrouter.chat('tngtech/deepseek-r1t2-chimera:free');
 
 let cachedPrompt: string | null = null;
 
