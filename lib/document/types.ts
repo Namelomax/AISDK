@@ -24,12 +24,17 @@ export type ProcessDiagramState = {
       }
   >;
   boundaries?: { start?: string | null; end?: string | null };
+  participants?: Array<{
+    role?: string | null;
+    name: string;
+    fullName?: string | null;
+  }>;
   graph?: {
     layout?: string;
     nodes?: Array<{
       id?: string | null;
       label: string;
-      type?: 'start' | 'process' | 'decision' | 'end' | 'actor' | 'doc' | 'note' | string;
+      type?: 'start' | 'process' | 'decision' | 'end' | 'actor' | 'doc' | 'note' | 'user-process' | string;
       details?: string | null;
     }>;
     edges?: Array<{

@@ -30,12 +30,12 @@ const ParticipantActionSchema = z.object({
 
 const StepNodeSchema = z.object({
   id: z.string().describe('Уникальный ID шага (S1, S2, S3 и т.д.)'),
-  label: z.string().describe('Краткое название шага (например: "Подготовка регламента")'),
-  description: z.string().describe('Подробное описание шага (2-4 предложения)'),
+  label: z.string().optional().default('Шаг процесса').describe('Краткое название шага (например: "Подготовка регламента")'),
+  description: z.string().optional().default('').describe('Подробное описание шага (2-4 предложения)'),
   participants: z.array(ParticipantActionSchema).describe('Участники шага с их действиями'),
-  product: z.string().describe('Продукт/результат шага (что получается на выходе)'),
+  product: z.string().optional().default('').describe('Продукт/результат шага (что получается на выходе)'),
   context: z.string().optional().describe('Дополнительный контекст (например: "в связи с понижением уровня программирования")'),
-});
+}).passthrough(); // Allow additional fields like role, details, type
 
 const ProcessDiagramPatchSchema = z.object({
   organization: z.object({
@@ -55,7 +55,10 @@ const ProcessDiagramPatchSchema = z.object({
   
   goal: z.string().optional().describe('Цель процесса одной строкой'),
   product: z.string().optional().describe('Итоговый продукт процесса'),
-  consumers: z.string().optional().describe('Потребители результата (кто использует продукт)'),
+  consumers: z.union([
+    z.string(),
+    z.array(z.string())
+  ]).optional().describe('Потребители результата (кто использует продукт) - строка или массив строк'),
   
   boundaries: z.object({
     start: z.string().optional(),
@@ -63,12 +66,12 @@ const ProcessDiagramPatchSchema = z.object({
   }).optional(),
   
 graph: z.object({
-  layout: z.literal('template-v1'),
+  layout: z.literal('template-v1').optional().default('template-v1'),
   nodes: z.array(StepNodeSchema),
   edges: z.array(z.object({
     from: z.string(),
     to: z.string(),
-  })).optional().default([]),  // ← Добавили .optional().default([])
+  })).optional().default([]),
 }).optional(),
 });
 
@@ -451,23 +454,53 @@ function mergeState(prev: ProcessDiagramState | null, patch: Partial<ProcessDiag
   }
 
   if (patch.graph && (Array.isArray(patch.graph.nodes) || Array.isArray(patch.graph.edges) || patch.graph.layout)) {
+    const existingNodes = Array.isArray(base.graph?.nodes) ? base.graph!.nodes! : [];
+    const patchNodes = Array.isArray(patch.graph.nodes) ? patch.graph.nodes : [];
+    
+    // Merge nodes: update existing by id, add new ones
+    const nodeMap = new Map<string, any>();
+    
+    // Add existing nodes
+    for (const node of existingNodes) {
+      if (node?.id) {
+        nodeMap.set(node.id, node);
+      }
+    }
+    
+    // Update/add nodes from patch
+    for (const node of patchNodes) {
+      if (node?.id) {
+        nodeMap.set(node.id, node); // This replaces if exists, adds if new
+      }
+    }
+    
+    const mergedNodes = Array.from(nodeMap.values());
+    
+    // Merge edges: keep existing + add new (avoid duplicates)
+    const existingEdges = Array.isArray(base.graph?.edges) ? base.graph!.edges! : [];
+    const patchEdges = Array.isArray(patch.graph.edges) ? patch.graph.edges : [];
+    const edgeSet = new Set<string>();
+    const mergedEdges: any[] = [];
+    
+    for (const edge of [...existingEdges, ...patchEdges]) {
+      if (edge?.from && edge?.to) {
+        const key = `${edge.from}->${edge.to}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          mergedEdges.push(edge);
+        }
+      }
+    }
+    
     next.graph = {
       layout: patch.graph.layout ?? base.graph?.layout,
-      nodes: Array.isArray(patch.graph.nodes) ? patch.graph.nodes : base.graph?.nodes,
-      edges: Array.isArray(patch.graph.edges) ? patch.graph.edges : base.graph?.edges,
+      nodes: mergedNodes,
+      edges: mergedEdges,
     };
   }
 
   next.updatedAt = new Date().toISOString();
-  return {
-    ...prev,
-    ...patch,
-    organization: { ...prev?.organization, ...patch?.organization },
-    owner: { ...prev?.owner, ...patch?.owner },
-    process: { ...prev?.process, ...patch?.process },
-    boundaries: { ...prev?.boundaries, ...patch?.boundaries },
-    graph: patch?.graph || prev?.graph,
-  };
+  return next;
 }
 
 const PatchSchema = z
@@ -685,6 +718,13 @@ export async function POST(request: Request) {
   const msgs = messages.map((m: any) => ({ role: m.role, content: toText(m) }));
   const lastUserText = msgs.filter((m: any) => m.role === 'user').pop()?.content || '';
 
+  console.log('🔄 Diagram update request:', {
+    prevStateExists: !!prevState,
+    prevNodesCount: prevState?.graph?.nodes?.length || 0,
+    prevNodeIds: prevState?.graph?.nodes?.map((n: any) => n.id).join(', ') || 'none',
+    lastMessagePreview: lastUserText.slice(0, 100)
+  });
+
   // Формируем контекст для AI (последние 5 сообщений для экономии токенов)
   const recentMessages = msgs.slice(-5).map((m: any) => {
     const content = clip(m.content, 1000);
@@ -703,6 +743,21 @@ export async function POST(request: Request) {
 
 You are an expert at extracting business process information from dialogues.
 
+CRITICAL INCREMENTAL UPDATE RULES:
+- Extract NEW or UPDATED information from the LAST USER MESSAGE
+- CURRENT STATE already contains existing data - you DON'T need to repeat it
+- Only return fields that are MENTIONED in the last user message
+- If user says "Цель: X" - return ONLY goal field, existing nodes will be preserved automatically
+- If user says "добавь шаг 4" - return ONLY S4 node, S1-S3 already exist in CURRENT STATE
+- If user says "измени шаг 2" - return ONLY updated S2, others remain unchanged
+- Empty response {} is valid if nothing new to add
+
+WHY THIS WORKS:
+- CURRENT STATE below shows all existing data (nodes, goal, product, etc.)
+- Your patch will be MERGED with CURRENT STATE, not replace it
+- Existing nodes/fields stay unless you explicitly override them
+- This is INCREMENTAL UPDATE, not full rebuild
+
 EXTRACTION RULES FOR STEP PARTICIPANTS:
 1. If participants listed as "Участники: директор, методист" - create separate entry for each
 2. If AFTER participant list there are lines with actions like:
@@ -711,29 +766,83 @@ EXTRACTION RULES FOR STEP PARTICIPANTS:
    MATCH these actions to participants from the list
 3. Extract action from parentheses: "директор (проверяет)" → action: "проверяет"
 4. Each participant MUST have name and action. If action not specified, use empty string ""
+5. If participant has format "должность (ФИО)" extract role and name separately
 
 EXTRACTION RULES FOR STEP PRODUCT:
 1. Product is the RESULT of the step
 2. Do NOT include participant actions in product
 3. Product usually follows "Продукт шага:" or "Создаёт:"
 
-CRITICAL: Extract ALL steps mentioned in the message. If user lists:
-- Шаг 1. ...
-- Шаг 2. ...
-- Шаг 3. ...
-You MUST return ALL THREE steps in nodes array.
+FIELD MAPPING RULES:
+- "Цель" or "Цель процесса" → ALWAYS put in "goal" field (separate top-level field, NOT in process.description)
+- "Процесс" or "Название процесса" → put in "process.name"
+- "Описание процесса" → put in "process.description" ONLY if it describes HOW the process works, NOT the goal
+- If user says "Цель: X" → extract X and put in "goal" field
+- "Организация" or "Компания" → put in "organization.name"
+- "Продукт" or "Итоговый продукт" → put in "product" (top-level, NOT in nodes)
+- "Потребители" → put in "consumers"
+
+IMPORTANT: "goal" and "process.description" are DIFFERENT:
+- goal = WHY we do this process (цель, желаемый результат)
+- process.description = WHAT this process is about (общее описание процесса)
+
+EXAMPLE:
+User says: "Цель: Популяризация спортивного программирования"
+Correct output:
+{
+  "goal": "Популяризация спортивного программирования",
+  "process": { "name": "..." }
+}
+
+INCREMENTAL UPDATES:
+- You can add just ONE or FEW nodes, not all at once
+- EXISTING nodes will be preserved - only add/update what user mentions
+- If user says "добавь шаг 4" - add ONLY S4, existing S1, S2, S3 will remain
+- If user says "измени шаг 2" - update ONLY S2, others will remain
+- If user says "удали шаг 3" - return all nodes EXCEPT S3
+- You can add just organization info, or just process name, or just goal
+- ALL FIELDS ARE OPTIONAL - extract only what user mentioned
+
+SPECIAL NODE TYPES:
+- If user mentions "процесс пользователя" or describes what user does, create a node with type="user-process"
+- This node should be placed above regular steps (id="USER_PROCESS_1", etc.)
+
+EDGE VALIDATION:
+- NEVER create edges with null/undefined source or target
+- Only create edges between existing nodes
+- Format: {from: "S1", to: "S2"}
 
 CURRENT STATE:
 ${JSON.stringify(prevState, null, 2)}
 
-RECENT MESSAGES:
+RECENT MESSAGES (for context only):
 ${recentMessages}
 
-IMPORTANT:
+LAST USER MESSAGE (extract ONLY from this):
+${lastUserText}
+
+CRITICAL JSON STRUCTURE REQUIREMENTS:
+- graph.layout MUST be "template-v1"
+- Each node MUST have: id, label, description, participants (as ARRAY of objects), product
+- participants MUST be an array of objects with structure: [{name: "...", role: "...", action: "..."}]
+- LABEL EXTRACTION RULES:
+  * If user writes "Шаг 4. Проведение конкурса..." → extract label: "Проведение конкурса..."
+  * Take the text AFTER "Шаг N." as the label
+  * If no label after "Шаг N." or label not mentioned at all, use "Шаг N"
+- If description not mentioned, summarize the step in 1-2 sentences
+- If product not mentioned, use empty string ""
 - Extract ALL fields mentioned: organization, process, goal, product, consumers, boundaries
-- Extract ALL steps from the message
 - Create edges: S1→S2, S2→S3, etc.
 - Return ONLY JSON object starting with { and ending with }
+
+CORRECT participants format:
+"participants": [
+  {"name": "Ищенко Р.В.", "role": "директор", "action": "проверяет финальный результат"},
+  {"name": "", "role": "методист", "action": "составляет методички"}
+]
+
+WRONG participants format:
+"participants": "Ищенко Р.В. (проверяет финальный результат), методист (составляет методички)"
 
 Extract the information:`,
     });
@@ -750,17 +859,31 @@ Extract the information:`,
       boundaries: aiPatch.boundaries,
     };
 
-    // Конвертируем consumers: string → string[]
+    // Конвертируем consumers: string | string[] → string[]
     if (aiPatch.consumers) {
-      const consumersArray = aiPatch.consumers
-        .split(',')
-        .map(c => c.trim())
-        .filter(Boolean);
-      patch.consumers = consumersArray;
+      if (Array.isArray(aiPatch.consumers)) {
+        patch.consumers = aiPatch.consumers.filter(Boolean);
+      } else {
+        const consumersArray = String(aiPatch.consumers)
+          .split(',')
+          .map(c => c.trim())
+          .filter(Boolean);
+        patch.consumers = consumersArray;
+      }
     }
 
     // Конвертируем graph.nodes: формат AI → формат ProcessDiagramState
     if (aiPatch.graph?.nodes) {
+      // Валидируем edges: удаляем те, у которых нет source или target
+      const validEdges = (aiPatch.graph.edges || []).filter(edge => {
+        const hasValidNodes = edge.from && edge.to;
+        if (!hasValidNodes) {
+          console.warn('⚠️ Skipping invalid edge:', edge);
+          return false;
+        }
+        return true;
+      });
+
       patch.graph = {
         layout: 'template-v1',
         nodes: aiPatch.graph.nodes.map(aiNode => {
@@ -800,13 +923,69 @@ Extract the information:`,
             role: firstRole || '',
             product: aiNode.product,
             details, // добавляем для совместимости
+            type: aiNode.id?.startsWith('USER_PROCESS') ? 'user-process' : 'process',
           };
         }),
-        edges: aiPatch.graph.edges,
+        edges: validEdges,
       };
     }
 
     const merged = mergeState(prevState, patch);
+    
+    console.log('📊 Merge result:', {
+      prevNodesCount: prevState?.graph?.nodes?.length || 0,
+      patchNodesCount: patch.graph?.nodes?.length || 0,
+      mergedNodesCount: merged.graph?.nodes?.length || 0,
+      nodeIds: merged.graph?.nodes?.map(n => n.id).join(', ') || 'none'
+    });
+
+    // Собираем всех участников из всех шагов для отображения в списке
+    // ВАЖНО: мержим с существующими участниками, не перезаписываем
+    const allParticipants = new Map<string, { role?: string; name: string; fullName?: string }>();
+    
+    // Сначала добавляем существующих участников из merged state
+    if (merged.participants && Array.isArray(merged.participants)) {
+      for (const p of merged.participants) {
+        const key = `${p.role || ''}_${p.name || p.fullName || ''}`.toLowerCase();
+        if (!allParticipants.has(key)) {
+          allParticipants.set(key, p);
+        }
+      }
+    }
+    
+    // Затем добавляем новых участников из PATCH (только если AI вернул новые узлы)
+    if (aiPatch.graph?.nodes) {
+      for (const node of aiPatch.graph.nodes) {
+        for (const participant of node.participants) {
+          // Парсим формат "должность (ФИО)" или просто "должность" или "ФИО"
+          const match = participant.name.match(/^(.+?)\s*\((.+?)\)$/);
+          if (match) {
+            // Формат "должность (ФИО)"
+            const role = match[1].trim();
+            const fullName = match[2].trim();
+            const key = `${role}_${fullName}`.toLowerCase();
+            if (!allParticipants.has(key)) {
+              allParticipants.set(key, { role, fullName, name: participant.name });
+            }
+          } else {
+            // Простой формат - просто имя или должность
+            const key = participant.name.toLowerCase();
+            if (!allParticipants.has(key)) {
+              allParticipants.set(key, {
+                role: participant.role,
+                name: participant.name,
+                fullName: participant.name,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Обновляем список участников только если были изменения
+    if (aiPatch.graph?.nodes && allParticipants.size > 0) {
+      merged.participants = Array.from(allParticipants.values());
+    }
 
     // Применяем к DrawIO XML если нужно
     if (merged.rawDrawioXml && patch.graph?.nodes) {
@@ -817,10 +996,17 @@ Extract the information:`,
       );
     }
 
+    console.log('✅ Returning merged state:', {
+      nodesCount: merged.graph?.nodes?.length || 0,
+      nodeIds: merged.graph?.nodes?.map((n: any) => n.id).join(', ') || 'none',
+      hasGoal: !!merged.goal,
+      hasParticipants: !!merged.participants?.length
+    });
+
     return new Response(JSON.stringify({ 
       success: true, 
       state: merged,
-      steps: patch.graph?.nodes || [],
+      steps: merged.graph?.nodes || [],  // Return ALL nodes from merged state, not just patch
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

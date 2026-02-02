@@ -23,7 +23,10 @@ function BoundaryNode({ data }: NodeProps) {
       {isStart ? (
         <Handle type="source" position={Position.Right} className="w-2 h-2" />
       ) : (
-        <Handle type="target" position={Position.Left} className="w-2 h-2" />
+        <>
+          <Handle type="target" position={Position.Left} className="w-2 h-2" />
+          <Handle type="source" position={Position.Right} className="w-2 h-2" />
+        </>
       )}
     </div>
   );

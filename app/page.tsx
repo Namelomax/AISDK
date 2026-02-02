@@ -41,6 +41,8 @@ export default function ChatPage() {
   });
   const [diagramState, setDiagramState] = useState<ProcessDiagramState | null>(null);
   const [diagramSteps, setDiagramSteps] = useState<any[]>([]);
+  const [isDiagramLoading, setIsDiagramLoading] = useState(false);
+  const [loadedDiagramConversationId, setLoadedDiagramConversationId] = useState<string | null>(null);
   const lastDiagramUserMessageIdRef = useRef<string | null>(null);
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
@@ -383,15 +385,19 @@ export default function ChatPage() {
     // Fire-and-forget: do not block chat/doc streaming.
     void (async () => {
       try {
+        setIsDiagramLoading(true);
+        // Only pass prevState if it belongs to the current conversation
+        const prevState = (loadedDiagramConversationId === requestConvId) ? diagramState : null;
         const resp = await fetch('/api/diagram', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: slice, state: diagramState }),
+          body: JSON.stringify({ messages: slice, state: prevState }),
         });
         const j = await resp.json().catch(() => ({}));
         if (j?.success && j?.state) {
           if (viewConversationId === requestConvId) {
             setDiagramState(j.state);
+            setLoadedDiagramConversationId(requestConvId);
             if (Array.isArray(j.steps)) setDiagramSteps(j.steps);
           } else {
             localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify({ state: j.state, steps: j.steps || [] }));
@@ -399,17 +405,20 @@ export default function ChatPage() {
         }
       } catch (e) {
         console.warn('Failed to update diagram state (queued)', e);
+      } finally {
+        setIsDiagramLoading(false);
       }
     })();
     // NOTE: diagramState intentionally excluded to prevent re-fetch loops
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, viewConversationId, messages]);
+  }, [conversationId, viewConversationId, messages, loadedDiagramConversationId]);
 
   // Load diagram state per viewed conversation.
   useEffect(() => {
     if (!viewConversationId) {
       setDiagramState(null);
       setDiagramSteps([]);
+      setLoadedDiagramConversationId(null);
       lastDiagramUserMessageIdRef.current = null;
       return;
     }
@@ -425,13 +434,16 @@ export default function ChatPage() {
           setDiagramState(parsed);
           setDiagramSteps([]);
         }
+        setLoadedDiagramConversationId(viewConversationId);
       } else {
         setDiagramState(null);
         setDiagramSteps([]);
+        setLoadedDiagramConversationId(viewConversationId);
       }
     } catch {
       setDiagramState(null);
       setDiagramSteps([]);
+      setLoadedDiagramConversationId(null);
     }
     lastDiagramUserMessageIdRef.current = null;
   }, [viewConversationId]);
@@ -876,6 +888,16 @@ export default function ChatPage() {
   const handleSelectConversation = (conversation: any) => {
     if (!conversation?.id) return;
 
+    // Save current conversation state before switching (prevent message loss)
+    if (conversationId && !String(conversationId).startsWith('local-') && authUser?.id && messages.length > 0) {
+      // Fire and forget - save current messages to avoid losing user's last message
+      fetch('/api/conversations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
+      }).catch(err => console.warn('Failed to save conversation on switch', err));
+    }
+
     // Always change the viewed chat immediately.
     setViewConversationId(conversation.id);
     localStorage.setItem('activeConversationId', conversation.id);
@@ -1007,7 +1029,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} diagramSteps={diagramSteps} isLoading={displayStatus !== 'ready'} />
+        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} diagramSteps={diagramSteps} isLoading={isDiagramLoading} />
       </div>
     </div>
   );

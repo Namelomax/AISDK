@@ -26,6 +26,7 @@ import {
   OwnerNode,
   ConsumerNode,
   BoundaryNode,
+  ParticipantsNode,
 } from './nodes';
 
 import type { ProcessDiagramState } from '@/lib/document/types';
@@ -56,6 +57,7 @@ const nodeTypes: NodeTypes = {
   owner: OwnerNode,
   consumer: ConsumerNode,
   boundary: BoundaryNode,
+  participants: ParticipantsNode,
 };
 
 export type Step = {
@@ -102,7 +104,7 @@ function stateToNodesAndEdges(
     draggable: true,
   });
 
-  // Owner (if exists and has real data)
+  // Owner
   const hasOwnerData = state.owner?.fullName?.trim() || state.owner?.position?.trim();
   if (hasOwnerData) {
     nodes.push({
@@ -122,6 +124,18 @@ function stateToNodesAndEdges(
     data: { description: state.goal || '' },
     draggable: true,
   });
+
+  // Participants
+  const hasParticipants = state.participants && state.participants.length > 0;
+  if (hasParticipants) {
+    nodes.push({
+      id: 'participants',
+      type: 'participants',
+      position: { x: -500, y: 150 },
+      data: { participants: state.participants || [] },
+      draggable: true,
+    });
+  }
 
   // Start boundary
   nodes.push({
