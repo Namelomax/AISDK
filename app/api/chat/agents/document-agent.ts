@@ -97,6 +97,205 @@ function extractSectionBody(markdown: string, headingQuery: string): string | nu
   return body;
 }
 
+function stripHiddenTags(input: string): string {
+  return String(input ?? '')
+    .replace(/<AI-HIDDEN>/gi, '')
+    .replace(/<\/AI-HIDDEN>/gi, '')
+    .trim();
+}
+
+type ProtocolPerson = {
+  name: string;
+  role?: string;
+};
+
+type ProtocolQuestion = {
+  question: string;
+  answer?: string;
+};
+
+type ProtocolDecision = {
+  decision: string;
+  responsible?: string;
+};
+
+type ProtocolDraft = {
+  protocolNumber?: string;
+  meetingDate?: string;
+  agenda?: string[];
+  customerOrg?: string;
+  customerParticipants?: ProtocolPerson[];
+  executorOrg?: string;
+  executorParticipants?: ProtocolPerson[];
+  terms?: { term: string; definition: string }[];
+  abbreviations?: { abbr: string; meaning: string }[];
+  meetingContent?: string[];
+  questions?: ProtocolQuestion[];
+  decisions?: ProtocolDecision[];
+  openQuestions?: string[];
+  issues?: string[];
+  approvals?: {
+    executorOrg?: string;
+    executorSigner?: string;
+    customerOrg?: string;
+    customerSigner?: string;
+  };
+};
+
+function formatProtocolMarkdown(draft: ProtocolDraft): string {
+  const number = (draft.protocolNumber || '').trim() || '—';
+  const date = (draft.meetingDate || '').trim() || 'Не указано в расшифровке';
+
+  const agenda = (draft.agenda || []).filter(Boolean);
+  const agendaLines = agenda.length ? agenda : ['Не указано в расшифровке'];
+
+  const customerOrg = (draft.customerOrg || '').trim() || 'Не указано в расшифровке';
+  const executorOrg = (draft.executorOrg || '').trim() || 'Не указано в расшифровке';
+
+  const customerParticipants = (draft.customerParticipants || []).filter((p) => p?.name?.trim());
+  const executorParticipants = (draft.executorParticipants || []).filter((p) => p?.name?.trim());
+
+  const terms = (draft.terms || []).filter((t) => t?.term?.trim() && t?.definition?.trim());
+  const abbreviations = (draft.abbreviations || []).filter((t) => t?.abbr?.trim() && t?.meaning?.trim());
+
+  const meetingContent = (draft.meetingContent || []).filter(Boolean);
+  const questions = (draft.questions || []).filter((q) => q?.question?.trim());
+  const decisions = (draft.decisions || []).filter((d) => d?.decision?.trim());
+  const openQuestions = (draft.openQuestions || []).filter(Boolean);
+  const issues = (draft.issues || []).filter(Boolean);
+
+  const approvals = draft.approvals || {};
+  const approvalExecutorOrg = (approvals.executorOrg || executorOrg).trim() || '—';
+  const approvalExecutorSigner = (approvals.executorSigner || '').trim() || '—';
+  const approvalCustomerOrg = (approvals.customerOrg || customerOrg).trim() || '—';
+  const approvalCustomerSigner = (approvals.customerSigner || '').trim() || '—';
+
+  const lines: string[] = [];
+  lines.push(`ПРОТОКОЛ ОБСЛЕДОВАНИЯ №${number}`);
+  lines.push('');
+  lines.push('1.\tДата встречи: ' + date);
+  lines.push('2.\tПовестка:');
+  for (const item of agendaLines) {
+    lines.push(`•\t${item}`);
+  }
+  lines.push('3.\tУчастники:');
+  lines.push(`Со стороны Заказчика ${customerOrg}:`);
+  lines.push('ФИО\tДолжность');
+  if (customerParticipants.length === 0) {
+    lines.push('Не указано\t—');
+  } else {
+    for (const person of customerParticipants) {
+      lines.push(`${person.name}\t${person.role?.trim() || '—'}`);
+    }
+  }
+  lines.push('');
+  lines.push(`Со стороны Исполнителя ${executorOrg}:`);
+  lines.push('ФИО\tДолжность/роль');
+  if (executorParticipants.length === 0) {
+    lines.push('Не указано\t—');
+  } else {
+    for (const person of executorParticipants) {
+      lines.push(`${person.name}\t${person.role?.trim() || '—'}`);
+    }
+  }
+  lines.push('');
+  lines.push('4.\tТермины и определения:');
+  if (terms.length === 0) {
+    lines.push('•\tНе указано в расшифровке');
+  } else {
+    for (const term of terms) {
+      lines.push(`•\t${term.term} – ${term.definition}`);
+    }
+  }
+  lines.push('5.\tСокращения и обозначения:');
+  if (abbreviations.length === 0) {
+    lines.push('•\tНе указано в расшифровке');
+  } else {
+    for (const abbr of abbreviations) {
+      lines.push(`•\t${abbr.abbr} – ${abbr.meaning}`);
+    }
+  }
+  lines.push('6.\tСодержание встречи:');
+  lines.push('В ходе встречи обсуждались следующие вопросы:');
+  if (meetingContent.length === 0) {
+    lines.push('Не указано в расшифровке');
+  } else {
+    for (const item of meetingContent) {
+      lines.push(item);
+    }
+  }
+  lines.push('');
+  lines.push('7.\tВопросы:');
+  if (questions.length === 0) {
+    lines.push('Не указано в расшифровке');
+    lines.push('');
+    lines.push('Ответы:');
+    lines.push('Не указано в расшифровке');
+  } else {
+    questions.forEach((q, idx) => {
+      lines.push(`${idx + 1}.\t${q.question}`);
+    });
+    lines.push('');
+    lines.push('Ответы:');
+    questions.forEach((q, idx) => {
+      lines.push(`${idx + 1}.\t${q.answer?.trim() || 'Ответ не указан в расшифровке'}`);
+    });
+  }
+  lines.push('');
+  lines.push('8.\tРешения:');
+  if (decisions.length === 0) {
+    lines.push('Не указано в расшифровке');
+  } else {
+    decisions.forEach((d, idx) => {
+      lines.push(`${idx + 1}.\t${d.decision}`);
+      lines.push(`Ответственный: ${d.responsible?.trim() || 'не указан'}.`);
+    });
+  }
+  lines.push('');
+  lines.push('9.\tОткрытые вопросы:');
+  const openItems = [...openQuestions, ...issues.map((i) => `Противоречие/недосказанность: ${i}`)].filter(Boolean);
+  if (openItems.length === 0) {
+    lines.push('Не указано в расшифровке');
+  } else {
+    openItems.forEach((item, idx) => {
+      lines.push(`${idx + 1}.\t${item}`);
+    });
+  }
+  lines.push('');
+  lines.push('10.\tСогласовано:');
+  lines.push('');
+  lines.push('Со стороны Исполнителя:\tСо стороны Заказчика:');
+  lines.push(`${approvalExecutorOrg}:\t${approvalCustomerOrg}`);
+  lines.push('');
+  lines.push(`${approvalExecutorSigner} /______________\t${approvalCustomerSigner} /______________`);
+  return lines.join('\n');
+}
+
+async function streamDocumentContent(dataStream: any, content: string) {
+  const text = String(content || '');
+  if (!text) return;
+
+  const chunkSize = 1200;
+  for (let i = 0; i < text.length; i += chunkSize) {
+    const chunk = text.slice(i, i + chunkSize);
+    dataStream.write({ type: 'data-documentDelta', data: chunk });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function collectMissingProtocolFields(draft: ProtocolDraft): string[] {
+  const missing: string[] = [];
+  if (!draft.meetingDate || !draft.meetingDate.trim()) missing.push('Дата встречи');
+  if (!draft.agenda || draft.agenda.filter(Boolean).length === 0) missing.push('Повестка');
+  if (!draft.customerParticipants || draft.customerParticipants.filter((p) => p?.name?.trim()).length === 0) {
+    missing.push('Участники со стороны Заказчика');
+  }
+  if (!draft.executorParticipants || draft.executorParticipants.filter((p) => p?.name?.trim()).length === 0) {
+    missing.push('Участники со стороны Исполнителя');
+  }
+  return missing;
+}
+
 export async function runDocumentAgent(context: AgentContext) {
   const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId } = context;
   let generatedDocumentContent = '';
@@ -235,6 +434,14 @@ async function generateFinalDocument(
 
   const hasExisting = Boolean(existingDocument && existingDocument.trim().length > 20);
 
+  const conversationContext = (messages || [])
+    .map((msg) => {
+      const text = extractMessageText(msg);
+      return text ? `${msg.role}: ${text}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
   console.log('🩹 Document edit detection:', {
     hasExisting,
     lastUser: (lastUserTextRaw || '').slice(0, 120),
@@ -243,348 +450,100 @@ async function generateFinalDocument(
     patchMode: hasExisting && isEditRequest(effectiveEditText),
   });
 
-  // PATCH MODE: ask the model for targeted section replacement patches.
-  if (hasExisting && isEditRequest(effectiveEditText)) {
-    const currentTitle = extractDocumentTitle(existingDocument || '');
-    if (currentTitle) {
-      writeData({ type: 'data-title', data: currentTitle });
-    }
+  const transcriptSource = stripHiddenTags([
+    lastUserTextRaw,
+    conversationContext || '',
+  ].filter(Boolean).join('\n\n'));
 
-    const progressId = `doc-edit-${crypto.randomUUID()}`;
-    dataStream.write({ type: 'text-start', id: progressId });
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '✏️ Вношу правку в документ…\n\n',
-    });
-
-    // 1) Build a minimal patch plan (fast JSON, no bodies)
-    const planSchema = z.object({
-      patches: z
-        .array(
-          z.object({
-            heading: z.string().min(1),
-            mode: z.enum(['replace', 'append', 'delete', 'rename']).optional(),
-            newHeading: z.string().optional(),
-            instructions: z.string().min(1),
-          })
-        )
-        .min(1),
-    });
-
-    const planPrompt = `Ты редактор Markdown-документа (регламента).
-
-ВАЖНО:
-- НЕ переписывай документ полностью.
-- Верни ТОЛЬКО JSON (без Markdown, без пояснений).
-- Сначала верни ПЛАН правок (без текста разделов), чтобы затем можно было сгенерировать тело раздела потоково.
-
-ФОРМАТ JSON:
-{"patches":[{"heading":"<существующий заголовок раздела>","mode":"replace|append|delete|rename","newHeading":"<новый заголовок для rename>","instructions":"<что именно изменить в этом разделе>"}]}
-
-ПРАВИЛА:
-- heading должен соответствовать существующему заголовку раздела в документе (текст заголовка без изменений).
-- mode:
-  - "append" — если нужно ДОБАВИТЬ пункт/абзац/подпункт.
-  - "replace" — если нужно ПЕРЕПИСАТЬ содержимое раздела.
-  - "delete" — если нужно УДАЛИТЬ раздел целиком.
-  - "rename" — если нужно изменить ТОЛЬКО НАЗВАНИЕ пункта/раздела (переименовать строку заголовка), НЕ трогая тело и подпункты.
-- instructions: одно-два предложения, максимально конкретно.
-- Если mode=rename, ОБЯЗАТЕЛЬНО заполни newHeading (можно сохранить нумерацию вроде "1.1" и поменять только текст).
-- Если пользователь просит добавить «пункт 2.1» — выбирай родительский раздел и mode=append.
-- Если пользователь просит ВЕРНУТЬ/ВОССТАНОВИТЬ пункт, которого сейчас НЕТ — выбирай родительский раздел и mode=append.
-- Если пользователь просит добавить пункт N.M — НЕ добавляй/не дублируй уже существующий пункт N.M. Если он уже есть, тогда mode=replace и instructions должны описывать ИЗМЕНЕНИЕ существующего пункта, а не повтор.
-
-ТЕКУЩИЙ ДОКУМЕНТ:
-"""
-${existingDocument}
-"""
-
-ЗАПРОС ПОЛЬЗОВАТЕЛЯ:
-"""
-${effectiveEditText}
-"""`;
-
-    const { object: plan } = await generateObject({
-      model,
-      temperature,
-      schema: planSchema,
-      prompt: planPrompt,
-    });
-
-    const finalPatches: DocumentPatch[] = [];
-    let workingDocument = existingDocument || '';
-
-    const requestedPoint = (() => {
-      const m = String(effectiveEditText || '').match(/\b\d+(?:\.\d+)+\b/);
-      return m?.[0] ?? '';
-    })();
-
-    // 2) Stream patch bodies from the model as tokens arrive (no artificial delays)
-    for (const planned of plan.patches) {
-      const heading = planned.heading;
-      const mode: 'replace' | 'append' | 'delete' | 'rename' =
-        planned.mode === 'append'
-          ? 'append'
-          : planned.mode === 'delete'
-            ? 'delete'
-            : planned.mode === 'rename'
-              ? 'rename'
-              : 'replace';
-
-      if (mode === 'rename') {
-        const newHeading = String((planned as any).newHeading ?? '').trim();
-        if (!newHeading) {
-          // Safer to do nothing than to rewrite the section and risk losing nested items.
-          continue;
-        }
-        const patch: DocumentPatch = { heading, mode: 'rename', content: '', newHeading };
-        writeData({ type: 'data-documentPatch', data: patch });
-        finalPatches.push(patch);
-        workingDocument = applyDocumentPatches(workingDocument, [patch]);
-        continue;
-      }
-
-      if (mode === 'delete') {
-        const patch: DocumentPatch = { heading, mode: 'delete', content: '' };
-        writeData({ type: 'data-documentPatch', data: patch });
-        finalPatches.push(patch);
-        workingDocument = applyDocumentPatches(workingDocument, [patch]);
-        continue;
-      }
-
-      const baseBody = mode === 'append' ? extractSectionBody(workingDocument, heading) ?? '' : '';
-
-      const contentPrompt = `Ты генерируешь ТОЛЬКО контент для правки Markdown-документа.
-
-ОГРАНИЧЕНИЯ:
-- Не добавляй строку заголовка (никаких "#", "##" в первой строке).
-- Не используй тройные кавычки и fenced code blocks.
-- Верни только Markdown-тело.
-
-РЕЖИМ:
-- mode=append: верни ТОЛЬКО добавляемый фрагмент (один подпункт/абзац), без пересказа всего раздела.
-- mode=replace: верни ПОЛНОЕ тело раздела (без строки заголовка).
-
-ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ:
-- Не вставляй лишние пробелы/переносы внутри слов.
-- Если запрос явно про пункт "${requestedPoint}" и mode=append, то добавляемый фрагмент должен начинаться с "${requestedPoint}." (например: "${requestedPoint}. Текст...").
-
-КОНТЕКСТ:
-- Заголовок раздела: "${heading}"
-- Mode: ${mode}
-- Инструкция правки: ${planned.instructions}
-
-ТЕКУЩИЙ ДОКУМЕНТ:
-"""
-${workingDocument}
-"""
-
-ПОСЛЕДНИЙ ЗАПРОС ПОЛЬЗОВАТЕЛЯ:
-"""
-${effectiveEditText}
-"""`;
-
-      const stream = await streamText({
-        model,
-        temperature,
-        messages: [{ role: 'user', content: contentPrompt }],
-      });
-
-      let acc = '';
-      for await (const part of stream.fullStream) {
-        if (part.type !== 'text-delta') continue;
-        let delta = String(part.text ?? '');
-        if (!delta) continue;
-        delta = stripCodeFences(delta);
-        if (!delta) continue;
-
-        // IMPORTANT: never stream per-token append patches.
-        // The client-side applyDocumentPatches() inserts "\n\n" between appends,
-        // which breaks words when deltas are tiny.
-        acc += delta;
-
-        const streamedBody =
-          mode === 'append'
-            ? [baseBody.trimEnd(), stripLeadingMarkdownHeading(acc)].filter(Boolean).join('\n\n')
-            : stripLeadingMarkdownHeading(acc);
-
-        dataStream.write({
-          type: 'data-documentPatch',
-          data: { heading, mode: 'replace', content: streamedBody } satisfies DocumentPatch,
-        });
-      }
-
-      const finalContent = stripLeadingMarkdownHeading(stripCodeFences(acc)).trimEnd();
-      const finalPatch: DocumentPatch = { heading, mode, content: finalContent };
-      finalPatches.push(finalPatch);
-      workingDocument = applyDocumentPatches(workingDocument, [finalPatch]);
-    }
-
-    let updated = workingDocument;
-    if (!updated.trim()) updated = existingDocument || '';
-
-    writeData({ type: 'data-finish', data: null });
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '✅ Правка применена к документу.\n',
-    });
-    dataStream.write({ type: 'text-end', id: progressId });
-
-    return updated;
-  }
-
-  const conversationContext = messages
-    .map((msg) => {
-      const text = extractMessageText(msg);
-      return text ? `${msg.role}: ${text}` : '';
-    })
-    .filter(Boolean)
-    .join('\n');
-
-  // === STATE INJECTION ===
-  // We inject the current document state into the prompt so the agent knows what it's working with.
-  let directive = '';
-
-  if (userPrompt && userPrompt.trim()) {
-    // If user has a custom prompt, use ONLY that as the main instruction
-    directive = `${userPrompt}
-
-  ВАЖНО ДЛЯ СХЕМЫ:
-  - Структурируй документ: разделы/подразделы через Markdown заголовки (#, ##, ###).
-  - Пункты и подпункты оформляй списками (нумерованными или маркированными) с вложенностью.
-
-  === ДАННЫЕ ДЛЯ ДОКУМЕНТА (ИСТОРИЯ ДИАЛОГА) ===
-  ${conversationContext}
-
-  === ВЫВОД ===
-  Сформируй ПОЛНЫЙ документ по инструкции выше. В ответе не задавай вопросов, не добавляй приветствий и пояснений.
-  Первая строка ответа — заголовок с символом # (например, "# Регламент ...").
-  Затем выведи весь текст документа. Никаких списков действий, сообщений ассистента или пояснений — только итоговый документ.
-  Если данных мало, выведи краткий документ из того, что есть, без заглушек "информация не предоставлена".`;
-  } else {
-    // Fallback minimal instruction if no user prompt
-    directive = `Сформируй документ на основе всей истории диалога.
-  Первая строка — заголовок с символом # (например: "# Регламент проведения...").
-  Структурируй документ: разделы/подразделы через Markdown заголовки (#, ##, ###), а пункты/подпункты — списками с вложенностью.
-  Используй ТОЛЬКО факты из переписки.
-  История диалога:
-  ${conversationContext}
-
-  Выведи только финальный документ: без вопросов, без приветствий, без пояснений.
-  Если данных мало, выведи краткий документ из того, что есть, без заглушек "информация не предоставлена".
-  Никаких кодовых блоков и тройных кавычек.`;
-  }
-
-  if (existingDocument && existingDocument.trim().length > 20) {
-    directive += `\n\n=== ТЕКУЩЕЕ СОСТОЯНИЕ ДОКУМЕНТА (STATE INJECTION) ===
-Ниже приведен текущий текст документа. Твоя задача — обновить его, учитывая последние правки из диалога.
-Верни ПОЛНЫЙ обновленный текст документа.
-
-"""
-${existingDocument}
-"""
-=====================================================
-`;
-  }
-
-  // История диалога уже включена выше
-
-  const stream = await streamText({
-    model,
-    temperature,
-    messages: [
-      {
-        role: 'user',
-        content: directive,
-      },
-    ],
+  const protocolSchema = z.object({
+    protocolNumber: z.string().optional(),
+    meetingDate: z.string().optional(),
+    agenda: z.array(z.string()).optional(),
+    customerOrg: z.string().optional(),
+    customerParticipants: z
+      .array(z.object({ name: z.string(), role: z.string().optional() }))
+      .optional(),
+    executorOrg: z.string().optional(),
+    executorParticipants: z
+      .array(z.object({ name: z.string(), role: z.string().optional() }))
+      .optional(),
+    terms: z.array(z.object({ term: z.string(), definition: z.string() })).optional(),
+    abbreviations: z.array(z.object({ abbr: z.string(), meaning: z.string() })).optional(),
+    meetingContent: z.array(z.string()).optional(),
+    questions: z.array(z.object({ question: z.string(), answer: z.string().optional() })).optional(),
+    decisions: z
+      .array(z.object({ decision: z.string(), responsible: z.string().optional() }))
+      .optional(),
+    openQuestions: z.array(z.string()).optional(),
+    issues: z.array(z.string()).optional(),
+    approvals: z
+      .object({
+        executorOrg: z.string().optional(),
+        executorSigner: z.string().optional(),
+        customerOrg: z.string().optional(),
+        customerSigner: z.string().optional(),
+      })
+      .optional(),
   });
 
+  const protocolPrompt = `Ты формируешь ТОЛЬКО «ПРОТОКОЛ ОБСЛЕДОВАНИЯ» по расшифровке встречи.
+
+ОГРАНИЧЕНИЯ:
+- Не придумывай факты. Используй только данные из расшифровки.
+- Если данных нет, оставляй поле пустым или кратко "Не указано в расшифровке".
+- Выяви противоречия/недосказанности и запиши их в поле "issues".
+- Структура должна соответствовать протоколу обследования (разделы 1–10 как в примере).
+
+ФОРМАТ ВЫВОДА: верни только JSON по схеме, без Markdown, без пояснений.
+
+Расшифровка встречи:
+"""
+${transcriptSource || 'Не указано в расшифровке'}
+"""`;
+
+  const { object: protocolDraft } = await generateObject({
+    model,
+    temperature: 0,
+    schema: protocolSchema,
+    prompt: protocolPrompt,
+  });
+
+  const missingFields = collectMissingProtocolFields(protocolDraft as ProtocolDraft);
+  if (missingFields.length > 0) {
+    const clarifyId = `clarify-${crypto.randomUUID()}`;
+    dataStream.write({ type: 'text-start', id: clarifyId });
+    dataStream.write({
+      type: 'text-delta',
+      id: clarifyId,
+      delta:
+        'Перед формированием протокола нужно уточнить:\n' +
+        missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n') +
+        '\n\nОтветьте, пожалуйста, чтобы я заполнил эти разделы протокола.',
+    });
+    dataStream.write({ type: 'text-end', id: clarifyId });
+    return existingDocument || '';
+  }
+
+  const finalDoc = formatProtocolMarkdown(protocolDraft as ProtocolDraft);
+
   writeData({ type: 'data-clear', data: null });
-  const placeholderTitle = 'Генерация документа…';
-  writeData({ type: 'data-title', data: placeholderTitle });
-  const progressId = `regulation-${crypto.randomUUID()}`;
+  writeData({ type: 'data-title', data: 'Протокол обследования' });
+  const progressId = `protocol-${crypto.randomUUID()}`;
   dataStream.write({ type: 'text-start', id: progressId });
   dataStream.write({
     type: 'text-delta',
     id: progressId,
-    delta: '📄 Формирую финальный регламент. Изменения будут появляться справа по мере генерации.\n\n',
+    delta: '📄 Формирую протокол обследования.\n\n',
   });
 
-  let bufferedForTitle = '';
-  let publishedFinalTitle = false;
-  let headingBuffer = '';
-  let headingRemoved = false;
-  let finalTitle = placeholderTitle;
-  let hasEmittedContent = false;
-  let fullContent = '';
-
-  for await (const part of stream.fullStream) {
-    if (part.type !== 'text-delta') continue;
-    let chunk = String(part.text ?? '').replace(/\r/g, '');
-    if (!chunk) continue;
-
-    // Remove code blocks if model adds them
-    chunk = chunk.replace(new RegExp('```markdown\\s*', 'gi'), '').replace(new RegExp('```', 'g'), '');
-    if (!chunk) continue;
-
-    // Buffer first line for title extraction
-    if (!headingRemoved) {
-      headingBuffer += chunk;
-      const newlineIdx = headingBuffer.indexOf('\n');
-      if (newlineIdx === -1) {
-        continue; 
-      }
-
-      const headingLine = headingBuffer.slice(0, newlineIdx);
-
-      if (!publishedFinalTitle) {
-        let titleMatch = headingLine.match(/^#\s*(.+)$/);
-        if (!titleMatch) {
-          const boldMatch = headingLine.match(/^\*\*(.+)\*\*$/);
-          if (boldMatch) titleMatch = boldMatch;
-        }
-
-        if (titleMatch) {
-          finalTitle = titleMatch[1].trim() || finalTitle;
-          writeData({ type: 'data-title', data: finalTitle });
-          publishedFinalTitle = true;
-          chunk = headingBuffer; 
-        } else {
-          chunk = headingBuffer;
-        }
-      }
-
-      headingBuffer = '';
-      headingRemoved = true;
-      if (!chunk) {
-        continue;
-      }
-    }
-
-    fullContent += chunk;
-    writeData({ type: 'data-documentDelta', data: chunk });
-    hasEmittedContent = true;
-  }
-
-  if (!publishedFinalTitle) {
-    writeData({ type: 'data-title', data: finalTitle });
-  }
-
-  if (!hasEmittedContent) {
-    const fallbackSource = conversationContext.trim() || '*Информация не предоставлена в диалоге.*';
-    writeData({ type: 'data-documentDelta', data: fallbackSource });
-  }
-
+  await streamDocumentContent(dataStream, finalDoc);
   writeData({ type: 'data-finish', data: null });
   dataStream.write({
     type: 'text-delta',
     id: progressId,
-    delta: `\n\n✅ Регламент "${finalTitle}" сформирован. При необходимости попросите меня внести изменения.`,
+    delta: '\n\n✅ Протокол обследования сформирован.',
   });
   dataStream.write({ type: 'text-end', id: progressId });
 
-  return fullContent;
+  return finalDoc;
 }
