@@ -60,13 +60,26 @@ function StepNode({ data, selected, id }: NodeProps) {
     restoreView();
     setOpenNodeId(null);
   };
+  const labelLength = (nodeData.label || '').length;
+  const baseSize = 64; // px
+  const extra = Math.max(0, labelLength) * 1.1;
+  const size = baseSize + extra;
 
   return (
+    
     <div className="relative">
       {/* Main step circle */}
       <div
         onClick={handleClick}
-        className={`w-16 h-16 rounded-full flex items-center justify-center cursor-pointer
+        style={{
+          width: size,
+          height: size,
+          minWidth: 120,
+          minHeight: 120,
+          maxWidth: 500,
+          maxHeight: 500,
+        }}
+        className={`rounded-full flex items-center justify-center cursor-pointer
           bg-green-100 border-2 border-green-500 dark:bg-green-900/30 dark:border-green-600
           ${selected ? 'ring-2 ring-blue-500 ring-offset-2' : ''}
           hover:shadow-lg transition-shadow`}
