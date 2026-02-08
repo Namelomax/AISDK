@@ -403,19 +403,6 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
               <Button
                 type="button"
                 size="sm"
-                variant={viewMode === 'document' ? 'secondary' : 'outline'}
-                onClick={() => {
-                  setUserToggledView(true);
-                  setViewMode('document');
-                }}
-                aria-label="Показать документ"
-                title="Документ"
-              >
-                Документ
-              </Button>
-              <Button
-                type="button"
-                size="sm"
                 variant={viewMode === 'diagram' ? 'secondary' : 'outline'}
                 onClick={() => {
                   setUserToggledView(true);
@@ -425,6 +412,19 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, diagramSt
                 title="Схема"
               >
                 Схема
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={viewMode === 'document' ? 'secondary' : 'outline'}
+                onClick={() => {
+                  setUserToggledView(true);
+                  setViewMode('document');
+                }}
+                aria-label="Показать документ"
+                title="Документ"
+              >
+                Документ
               </Button>
             </div>
           )}
