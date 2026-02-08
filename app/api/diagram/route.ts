@@ -946,9 +946,15 @@ Extract the information:`,
     // Сначала добавляем существующих участников из merged state
     if (merged.participants && Array.isArray(merged.participants)) {
       for (const p of merged.participants) {
-        const key = `${p.role || ''}_${p.name || p.fullName || ''}`.toLowerCase();
+        const name = p.name || p.fullName || '';
+        if (!name) continue;
+        const key = `${p.role || ''}_${name}`.toLowerCase();
         if (!allParticipants.has(key)) {
-          allParticipants.set(key, p);
+          allParticipants.set(key, {
+            role: p.role ?? undefined,
+            name,
+            fullName: p.fullName ?? undefined,
+          });
         }
       }
     }
@@ -972,7 +978,7 @@ Extract the information:`,
             const key = participant.name.toLowerCase();
             if (!allParticipants.has(key)) {
               allParticipants.set(key, {
-                role: participant.role,
+                role: participant.role ?? undefined,
                 name: participant.name,
                 fullName: participant.name,
               });
