@@ -155,6 +155,15 @@ export default function ChatPage() {
     return null;
   }
 
+  function getLastUserId(uiMessages: any[]): string | null {
+    if (!Array.isArray(uiMessages)) return null;
+    for (let i = uiMessages.length - 1; i >= 0; i--) {
+      const m = uiMessages[i];
+      if (m?.role === 'user' && m?.id) return String(m.id);
+    }
+    return null;
+  }
+
   function extractTitleFromMarkdown(markdown?: string | null): string | null {
     const text = String(markdown || '').replace(/\r\n?/g, '\n');
     if (!text.trim()) return null;
@@ -332,6 +341,67 @@ export default function ChatPage() {
           ...prev,
           isStreaming: false,
         }));
+        
+        // Validate document and diagram after document creation to ensure consistency
+        void (async () => {
+          try {
+            // Wait a bit to ensure document state is updated
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            const currentDoc = document.content;
+            const currentMessages = messages;
+            
+            if (currentDoc) {
+              console.log('🔄 Validating document after creation...');
+              const docValidateResp = await fetch('/api/document/validate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                  documentContent: currentDoc, 
+                  messages: currentMessages 
+                }),
+              });
+              const docValidateResult = await docValidateResp.json().catch(() => ({}));
+              if (docValidateResult?.success && docValidateResult?.corrected && docValidateResult?.correctedDocument) {
+                console.log('✅ Document corrected after creation');
+                updateEngineDocument((prev: DocumentState) => ({
+                  ...prev,
+                  content: docValidateResult.correctedDocument,
+                }));
+              }
+            }
+            
+            // Also validate diagram to sync with new document
+            if (diagramState && loadedDiagramConversationId === conversationId) {
+              setIsDiagramLoading(true);
+              console.log('🔄 Validating diagram after document creation...');
+              console.log('📄 Document has', currentDoc.length, 'characters');
+              const diagramValidateResp = await fetch('/api/diagram/validate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                  state: diagramState, 
+                  messages: currentMessages,
+                  documentContent: currentDoc,
+                }),
+              });
+              const diagramValidateResult = await diagramValidateResp.json().catch(() => ({}));
+              if (diagramValidateResult?.success && diagramValidateResult?.corrected && diagramValidateResult?.state) {
+                console.log('✅ Diagram corrected after document creation');
+                setDiagramState(diagramValidateResult.state);
+                setDiagramSteps(diagramValidateResult.state.graph?.nodes || []);
+                localStorage.setItem(`diagramState:${conversationId}`, JSON.stringify({ 
+                  state: diagramValidateResult.state, 
+                  steps: diagramValidateResult.state.graph?.nodes || [] 
+                }));
+              }
+              setIsDiagramLoading(false);
+            }
+          } catch (e) {
+            console.warn('Failed to validate after document creation', e);
+            setIsDiagramLoading(false);
+          }
+        })();
       }
     },
   });
@@ -357,6 +427,7 @@ export default function ChatPage() {
     setConversationId(target);
     const hydrated = toUIMessages(viewedConversation?.messages || []);
     setLastSavedAssistantId(getLastAssistantId(hydrated));
+    setLastSavedUserMessageId(getLastUserId(hydrated));
     setMessages(hydrated);
     setDocument(viewDocument);
     return target;
@@ -516,6 +587,40 @@ export default function ChatPage() {
   }, [document.content, conversationId]);
 
   const [lastSavedAssistantId, setLastSavedAssistantId] = useState<string | null>(null);
+  const [lastSavedUserMessageId, setLastSavedUserMessageId] = useState<string | null>(null);
+  
+  // Save user messages immediately after they're sent (don't wait for AI response)
+  useEffect(() => {
+    if (!authUser?.id || !conversationId) return;
+    if (String(conversationId).startsWith('local-')) return;
+    
+    const last = messages.at(-1);
+    if (!last || last.role !== 'user') return;
+    if (last.id === lastSavedUserMessageId) return;
+    
+    // Save immediately after user sends message
+    (async () => {
+      try {
+        const resp = await fetch('/api/conversations', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
+        });
+        const j = await resp.json();
+        if (j?.success) {
+          setLastSavedUserMessageId(last.id);
+          setConversationsList(prev => prev.map(conv => 
+            conv.id === conversationId ? { ...conv, messages: messages, document_content: document.content } : conv
+          ));
+          console.log('✅ User message saved immediately');
+        }
+      } catch (e) {
+        console.warn('Failed to save user message immediately', e);
+      }
+    })();
+  }, [messages, authUser?.id, conversationId, lastSavedUserMessageId, document.content, setConversationsList]);
+  
+  // Save after AI responds with validation
   useEffect(() => {
     if (!authUser?.id || !conversationId) return;
     if (String(conversationId).startsWith('local-')) return;
@@ -539,6 +644,39 @@ export default function ChatPage() {
         if (j?.success) {
           setLastSavedAssistantId(last.id);
           setConversationsList(prev => prev.map(conv => conv.id === conversationId ? { ...conv, messages: messages, document_content: document.content } : conv));
+          
+          // Validate diagram after AI response to ensure consistency with chat
+          if (diagramState && loadedDiagramConversationId === conversationId) {
+            void (async () => {
+              try {
+                setIsDiagramLoading(true);
+                console.log('🔄 Validating diagram after AI response...');
+                const validateResp = await fetch('/api/diagram/validate', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                    state: diagramState, 
+                    messages: messages,
+                    documentContent: document.content,
+                  }),
+                });
+                const validateResult = await validateResp.json().catch(() => ({}));
+                if (validateResult?.success && validateResult?.corrected && validateResult?.state) {
+                  console.log('✅ Diagram corrected after AI response');
+                  setDiagramState(validateResult.state);
+                  setDiagramSteps(validateResult.state.graph?.nodes || []);
+                  localStorage.setItem(`diagramState:${conversationId}`, JSON.stringify({ 
+                    state: validateResult.state, 
+                    steps: validateResult.state.graph?.nodes || [] 
+                  }));
+                }
+              } catch (e) {
+                console.warn('Failed to validate diagram after AI response', e);
+              } finally {
+                setIsDiagramLoading(false);
+              }
+            })();
+          }
         }
       } catch (e) {
         console.warn('Failed to persist conversation after finish', e);
@@ -592,6 +730,7 @@ export default function ChatPage() {
               setViewConversationId(activeConv.id);
               const hydrated = toUIMessages(activeConv.messages);
               setLastSavedAssistantId(getLastAssistantId(hydrated));
+              setLastSavedUserMessageId(getLastUserId(hydrated));
               setMessages(hydrated);
               
               // Restore document content
@@ -660,6 +799,7 @@ export default function ChatPage() {
               setViewConversationId(first.id ?? null);
               const hydrated = toUIMessages(first.messages);
               setLastSavedAssistantId(getLastAssistantId(hydrated));
+              setLastSavedUserMessageId(getLastUserId(hydrated));
               setMessages(hydrated);
               
               // Restore document content on login
@@ -890,12 +1030,30 @@ export default function ChatPage() {
 
     // Save current conversation state before switching (prevent message loss)
     if (conversationId && !String(conversationId).startsWith('local-') && authUser?.id && messages.length > 0) {
-      // Fire and forget - save current messages to avoid losing user's last message
-      fetch('/api/conversations', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
-      }).catch(err => console.warn('Failed to save conversation on switch', err));
+      // Save current messages to avoid losing user's last message
+      void (async () => {
+        try {
+          const resp = await fetch('/api/conversations', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
+          });
+          const j = await resp.json();
+          if (j?.success) {
+            console.log('✅ Conversation saved before switch');
+            const lastMsg = messages.at(-1);
+            if (lastMsg) {
+              if (lastMsg.role === 'user') setLastSavedUserMessageId(lastMsg.id);
+              if (lastMsg.role === 'assistant') setLastSavedAssistantId(lastMsg.id);
+            }
+            setConversationsList(prev => prev.map(conv => 
+              conv.id === conversationId ? { ...conv, messages: messages, document_content: document.content } : conv
+            ));
+          }
+        } catch (err) {
+          console.warn('Failed to save conversation on switch', err);
+        }
+      })();
     }
 
     // Always change the viewed chat immediately.
@@ -925,6 +1083,7 @@ export default function ChatPage() {
     setConversationId(conversation.id);
     const hydrated = toUIMessages(conversation.messages);
     setLastSavedAssistantId(getLastAssistantId(hydrated));
+    setLastSavedUserMessageId(getLastUserId(hydrated));
     setMessages(hydrated);
 
     // Keep engine document in sync when engine chat changes.

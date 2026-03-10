@@ -191,26 +191,26 @@ export const PromptInputWrapper = ({
           ? (crypto as any).randomUUID()
           : String(Date.now());
 
-      if (onUserMessageQueued) {
-        const parts: any[] = [];
-        if (trimmedText) parts.push({ type: 'text', text: trimmedText });
-        for (const f of preparedFiles) {
-          parts.push({
-            type: 'file',
-            id: (f as any)?.id,
-            filename: (f as any)?.filename,
-            url: (f as any)?.url,
-            mediaType: (f as any)?.mediaType,
-          });
-        }
-        onUserMessageQueued({
-          id: clientMessageId,
-          role: 'user',
-          parts,
-          metadata: {},
+      const parts: any[] = [];
+      if (trimmedText) parts.push({ type: 'text', text: trimmedText });
+      for (const f of preparedFiles) {
+        parts.push({
+          type: 'file',
+          id: (f as any)?.id,
+          filename: (f as any)?.filename,
+          url: (f as any)?.url,
+          mediaType: (f as any)?.mediaType,
         });
       }
 
+      const userMessage = {
+        id: clientMessageId,
+        role: 'user',
+        parts,
+        metadata: {},
+      };
+
+      // Ensure conversation exists before sending (required for proper backend saving)
       const ensuredConversationId = await ensureConversationCreated(
         authUser,
         baseConversationId,
@@ -219,8 +219,16 @@ export const PromptInputWrapper = ({
         abort.signal
       );
 
-      if (cancelRequestedRef.current || abort.signal.aborted) return;
+      if (cancelRequestedRef.current || abort.signal.aborted) {
+        return;
+      }
 
+      // Queue diagram update (non-blocking)
+      if (onUserMessageQueued) {
+        onUserMessageQueued(userMessage);
+      }
+
+      // Send message - useChat will add it to UI and handle the request
       sendMessage(
         {
           id: clientMessageId,

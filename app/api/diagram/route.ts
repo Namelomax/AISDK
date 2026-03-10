@@ -744,19 +744,47 @@ export async function POST(request: Request) {
 You are an expert at extracting business process information from dialogues.
 
 CRITICAL INCREMENTAL UPDATE RULES:
-- Extract NEW or UPDATED information from the LAST USER MESSAGE
+- Extract NEW or UPDATED information from the LAST USER MESSAGE ONLY
 - CURRENT STATE already contains existing data - you DON'T need to repeat it
 - Only return fields that are MENTIONED in the last user message
-- If user says "Цель: X" - return ONLY goal field, existing nodes will be preserved automatically
-- If user says "добавь шаг 4" - return ONLY S4 node, S1-S3 already exist in CURRENT STATE
-- If user says "измени шаг 2" - return ONLY updated S2, others remain unchanged
+- DO NOT return nodes that already exist and weren't changed
+- If user says "Цель: X" - return ONLY {"goal": "X"}, NO nodes
+- If user says "добавь шаг 4" - return ONLY {"graph": {"nodes": [S4]}}, NOT S1-S3
+- If user says "измени шаг 2" - return ONLY {"graph": {"nodes": [updated S2]}}, NOT other nodes
 - Empty response {} is valid if nothing new to add
+
+EXAMPLES OF CORRECT INCREMENTAL UPDATES:
+
+Example 1 - Adding new step:
+CURRENT STATE: has S1, S2, S3
+LAST USER MESSAGE: "Шаг 4. Подведение итогов. Подводятся итоги..."
+CORRECT OUTPUT: {"graph": {"nodes": [S4], "edges": [{"from": "S3", "to": "S4"}]}}
+WRONG OUTPUT: {"graph": {"nodes": [S1, S2, S3, S4], ...}} ← DON'T DO THIS!
+
+Example 2 - Adding goal:
+CURRENT STATE: has S1-S4
+LAST USER MESSAGE: "Цель: Популяризация..."
+CORRECT OUTPUT: {"goal": "Популяризация..."}
+WRONG OUTPUT: {"goal": "...", "graph": {"nodes": [S1, S2, S3, S4]}} ← DON'T DO THIS!
+
+Example 3 - Updating one step:
+CURRENT STATE: has S1, S2, S3
+LAST USER MESSAGE: "Измени шаг 2 - добавь участника"
+CORRECT OUTPUT: {"graph": {"nodes": [{"id": "S2", "participants": [...]}]}}
+WRONG OUTPUT: {"graph": {"nodes": [S1, updated S2, S3]}} ← DON'T DO THIS!
+
+Example 4 - Deleting a step:
+CURRENT STATE: has S1, S2, S3, S4
+LAST USER MESSAGE: "Удали шаг 3"
+CORRECT OUTPUT: {"graph": {"nodes": [S1, S2, S4]}} ← Return all EXCEPT deleted
+NOTE: For deletion, you MUST return all nodes except the deleted one
 
 WHY THIS WORKS:
 - CURRENT STATE below shows all existing data (nodes, goal, product, etc.)
 - Your patch will be MERGED with CURRENT STATE, not replace it
 - Existing nodes/fields stay unless you explicitly override them
 - This is INCREMENTAL UPDATE, not full rebuild
+- RETURNING ALL NODES = WRONG, RETURN ONLY CHANGED/NEW NODES = CORRECT
 
 EXTRACTION RULES FOR STEP PARTICIPANTS:
 1. If participants listed as "Участники: директор, методист" - create separate entry for each
@@ -812,14 +840,19 @@ EDGE VALIDATION:
 - Only create edges between existing nodes
 - Format: {from: "S1", to: "S2"}
 
-CURRENT STATE:
+===== CURRENT STATE (ALREADY IN DATABASE - DON'T REPEAT THIS DATA!) =====
 ${JSON.stringify(prevState, null, 2)}
+
+EXISTING NODES: ${prevState?.graph?.nodes?.map((n: any) => n.id).join(', ') || 'NONE'}
+↑↑↑ THESE NODES ALREADY EXIST - DO NOT RETURN THEM UNLESS YOU'RE UPDATING THEM! ↑↑↑
+===== END OF CURRENT STATE =====
 
 RECENT MESSAGES (for context only):
 ${recentMessages}
 
-LAST USER MESSAGE (extract ONLY from this):
+===== LAST USER MESSAGE (extract ONLY from this) =====
 ${lastUserText}
+===== END OF LAST USER MESSAGE =====
 
 CRITICAL JSON STRUCTURE REQUIREMENTS:
 - graph.layout MUST be "template-v1"
@@ -848,6 +881,14 @@ Extract the information:`,
     });
 
     console.log('✅ AI extracted patch:', JSON.stringify(aiPatch, null, 2));
+    console.log('📝 Patch analysis:', {
+      hasGraph: !!aiPatch.graph,
+      patchNodesCount: aiPatch.graph?.nodes?.length || 0,
+      patchNodeIds: aiPatch.graph?.nodes?.map((n: any) => n.id).join(', ') || 'none',
+      hasGoal: !!aiPatch.goal,
+      hasProduct: !!aiPatch.product,
+      hasOrganization: !!aiPatch.organization,
+    });
 
     // Конвертируем AI-формат в ProcessDiagramState формат
     const patch: Partial<ProcessDiagramState> = {
